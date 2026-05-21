@@ -32,7 +32,7 @@ When it finishes you'll see something like:
 ```
 Container 'my-agent' is up.
   IP:     10.x.y.z
-  Web:    https://10.x.y.z:8443/vnc.html   (user: agent  pass: agentagent)
+  Web:    https://10.x.y.z:8443/vnc.html   (no auth)
   Shell:  incus exec my-agent -- sudo -iu agent
 ```
 

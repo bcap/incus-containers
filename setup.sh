@@ -17,8 +17,7 @@
 # (Zen 4+ / Sapphire Rapids+).
 #
 # Access:
-#   https://<container-ip>:8443/   (web client, self-signed cert)
-#   user/pass: agent / agentagent  (KasmVNC requires >=6 chars)
+#   https://<container-ip>:8443/   (web client, self-signed cert, no auth)
 
 set -euo pipefail
 
@@ -105,21 +104,10 @@ if ! /usr/bin/Xvnc -version 2>&1 | grep -qi kasm; then
   /usr/bin/Xvnc -version 2>&1 | grep -qi kasm
 fi
 
-# --- KasmVNC config + password (user-scoped under ~agent/.vnc) ---
+# --- KasmVNC config (user-scoped under ~agent/.vnc) ---
+# Passwordless: -SecurityTypes None disables RFB auth, -disableBasicAuth
+# (in the systemd unit below) disables the websocket HTTP BasicAuth gate.
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.vnc"
-
-# Auth at the websocket layer only (HTTP BasicAuth from the web client).
-# RFB-layer auth (-SecurityTypes None) is disabled because:
-#   - kasmvncpasswd writes htpasswd-style files
-#   - the RFB -PasswordFile expects legacy binary-obfuscated format
-#   - the BasicAuth gate already prevents unauthorized access
-# Password 'agentagent' (username doubled — KasmVNC requires >=6 chars).
-KASM_PASS="${USER_NAME}${USER_NAME}"
-sudo -u "${USER_NAME}" bash -c "
-  printf '%s\n%s\n' '${KASM_PASS}' '${KASM_PASS}' | /usr/bin/kasmvncpasswd -u ${USER_NAME} -wo '${USER_HOME}/.kasmpasswd'
-"
-chmod 0600 "${USER_HOME}/.kasmpasswd"
-chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.kasmpasswd"
 
 # Self-signed TLS cert for the websocket layer. The `vncserver` perl wrapper
 # auto-generates one, but we run Xvnc directly under systemd, so do it here.
@@ -189,7 +177,7 @@ install -d -m 0755 /etc/systemd/system /etc/environment.d /etc/profile.d
 
 # Xvnc is KasmVNC's combined X server + VNC + websocket/web server.
 # -interface 0.0.0.0 binds websocket on all interfaces (reachable via incusbr0).
-# -SecurityTypes None lets the websocket layer handle auth via the htpasswd file.
+# Passwordless: -SecurityTypes None (no RFB auth) + -disableBasicAuth (no web auth).
 cat >/etc/systemd/system/agent-kasmvnc.service <<EOF
 [Unit]
 Description=KasmVNC Xvnc (combined X + VNC + web client) for llm-agent container
@@ -208,7 +196,7 @@ ExecStart=/usr/bin/Xvnc ${DISPLAY_NUM} \\
   -cert ${USER_HOME}/.vnc/self.pem \\
   -httpd /usr/share/kasmvnc/www \\
   -SecurityTypes None \\
-  -KasmPasswordFile ${USER_HOME}/.kasmpasswd \\
+  -disableBasicAuth \\
   -FrameRate 60
 Restart=on-failure
 
@@ -259,4 +247,4 @@ fi
 
 echo
 echo "Provisioning complete."
-echo "Web client: https://<container-ip>:${WEB_PORT}/vnc.html  (user: ${USER_NAME} / pass: ${KASM_PASS})"
+echo "Web client: https://<container-ip>:${WEB_PORT}/vnc.html  (no auth)"

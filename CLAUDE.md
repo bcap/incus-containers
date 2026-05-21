@@ -28,7 +28,7 @@ system services owned by uid 1000:
 
 - `agent-kasmvnc.service` — KasmVNC's `Xvnc :99` (combined X server +
   VNC + websocket/web client), listening on `0.0.0.0:8443` (HTTPS web UI).
-  Default auth: user `agent` / pass `agent` via `~/.vnc/passwd` (htpasswd-style).
+  Runs passwordless (`-SecurityTypes None -disableBasicAuth`).
 - `agent-wm.service` — `openbox-session` with `tint2` panel launched via
   `~/.config/openbox/autostart`
 
@@ -106,10 +106,11 @@ To harden for actively hostile agents, swap `raw.idmap` for
   `dbus-run-session`.
 - **CachyOS v4 SIGILLs on pre-Zen 4 hosts.** Don't run setup on a host
   whose CPU lacks x86-64-v4.
-- **KasmVNC default credentials are `agent` / `agent`.** Anyone on
-  incusbr0 who can reach :8443 can log in. Rotate via
-  `kasmvncpasswd -u agent -wo ~/.vnc/passwd` inside the container, or
-  add an `incus network acl` if running multiple containers on the same bridge.
+- **KasmVNC runs without auth** (`-SecurityTypes None -disableBasicAuth`).
+  Anything on incusbr0 reaching :8443 gets a session. Add an
+  `incus network acl` if running multiple containers on the same bridge,
+  or re-enable auth by dropping `-disableBasicAuth` and provisioning
+  `~/.kasmpasswd` via `kasmvncpasswd`.
 
 ## Iteration loop
 
