@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Provisions a llm-agent container. Run as root inside the container:
-#   incus exec <name> -- bash /root/setup.sh
+# Provisions an llm-agent container. Run as root inside the container:
+#   bash /root/setup.sh
 #
 # Installs:
 #   - CachyOS repos (for brave-bin + v4-optimized packages)
@@ -29,7 +29,6 @@ fi
 USER_UID=1000
 USER_NAME="agent"
 
-# --- User: uid 1000, passwordless wheel ---
 if ! getent passwd "${USER_UID}" >/dev/null; then
   useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
   passwd -d "${USER_NAME}"
@@ -43,18 +42,15 @@ SCREEN_W=1920
 SCREEN_H=1080
 SCREEN_D=24
 
-# KasmVNC release (upstream binary RPM, repacked onto Arch).
 KASM_VERSION="1.4.0"
 KASM_RPM="kasmvncserver_fedora_fortyone_${KASM_VERSION}_x86_64.rpm"
 KASM_URL="https://github.com/kasmtech/KasmVNC/releases/download/v${KASM_VERSION}/${KASM_RPM}"
 
 # pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
 # /sys/.../uevent in unprivileged containers and make pacman exit 1 even
-# though the transaction completed. Wrap pacman so set -e doesn't trip,
-# then verify installed packages explicitly.
+# though the transaction completed.
 pac() { pacman "$@" || true; }
 
-# --- CachyOS repos (idempotent: cachyos-keyring as marker) ---
 if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
   pac -Sy --needed --noconfirm wget tar
   pacman -Q wget tar >/dev/null
@@ -70,10 +66,6 @@ if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
   pacman -Qi cachyos-keyring >/dev/null
 fi
 
-# --- Packages ---
-# KasmVNC runtime deps: libjpeg-turbo, libwebp, gnutls, openssl, libxfont2,
-# pixman, perl, xkeyboard-config, xorg-xkbcomp, xorg-xauth, libdrm.
-# libarchive provides bsdtar for RPM extraction.
 PKGS=(
   base-devel git sudo curl libarchive
   openbox tint2 konsole
@@ -86,12 +78,9 @@ PKGS=(
 pac -Sy --needed --noconfirm "${PKGS[@]}"
 pacman -Q "${PKGS[@]}" >/dev/null
 
-# --- Passwordless wheel sudo (sudoers.d ships with the sudo package) ---
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
 chmod 0440 /etc/sudoers.d/wheel-nopass
 
-# --- KasmVNC: install by extracting upstream Fedora 41 RPM onto Arch ---
-# Idempotent: skip if /usr/bin/Xvnc reports KasmVNC.
 if ! /usr/bin/Xvnc -version 2>&1 | grep -qi kasm; then
   echo "[setup] Installing KasmVNC ${KASM_VERSION}..."
   tmpd="$(mktemp -d)"
@@ -104,13 +93,8 @@ if ! /usr/bin/Xvnc -version 2>&1 | grep -qi kasm; then
   /usr/bin/Xvnc -version 2>&1 | grep -qi kasm
 fi
 
-# --- KasmVNC config (user-scoped under ~agent/.vnc) ---
-# Passwordless: -SecurityTypes None disables RFB auth, -disableBasicAuth
-# (in the systemd unit below) disables the websocket HTTP BasicAuth gate.
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.vnc"
 
-# Self-signed TLS cert for the websocket layer. The `vncserver` perl wrapper
-# auto-generates one, but we run Xvnc directly under systemd, so do it here.
 if [[ ! -f "${USER_HOME}/.vnc/self.pem" ]]; then
   sudo -u "${USER_NAME}" openssl req -x509 -nodes -newkey rsa:2048 \
     -keyout "${USER_HOME}/.vnc/self.pem" \
@@ -120,14 +104,11 @@ if [[ ! -f "${USER_HOME}/.vnc/self.pem" ]]; then
   chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/self.pem"
 fi
 
-# Minimal server config (YAML). Explicit beats surprises.
 cat >"${USER_HOME}/.vnc/kasmvnc.yaml" <<EOF
 network:
   websocket_port: ${WEB_PORT}
   ssl:
     require_ssl: true
-    # No pem_certificate/pem_key: KasmVNC auto-generates a self-signed cert
-    # at ~/.vnc/self.pem on first start.
 desktop:
   resolution:
     width: ${SCREEN_W}
@@ -143,14 +124,12 @@ EOF
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/kasmvnc.yaml"
 chmod 0644 "${USER_HOME}/.vnc/kasmvnc.yaml"
 
-# --- Brave: skip kwallet/keyring integration (not available in container) ---
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
 cat >"${USER_HOME}/.config/brave-flags.conf" <<'EOF'
 --password-store=basic
 EOF
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/brave-flags.conf"
 
-# --- Openbox: autostart tint2 + minimal right-click menu (Brave, Konsole) ---
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/openbox"
 cat >"${USER_HOME}/.config/openbox/autostart" <<'EOF'
 tint2 &
@@ -172,12 +151,8 @@ cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
 EOF
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
 
-# --- systemd units for the display stack ---
 install -d -m 0755 /etc/systemd/system /etc/environment.d /etc/profile.d
 
-# Xvnc is KasmVNC's combined X server + VNC + websocket/web server.
-# -interface 0.0.0.0 binds websocket on all interfaces (reachable via incusbr0).
-# Passwordless: -SecurityTypes None (no RFB auth) + -disableBasicAuth (no web auth).
 cat >/etc/systemd/system/agent-kasmvnc.service <<EOF
 [Unit]
 Description=KasmVNC Xvnc (combined X + VNC + web client) for llm-agent container
@@ -230,21 +205,12 @@ EOF
 chmod 0644 /etc/profile.d/agent-display.sh
 
 systemctl daemon-reload
-# Remove old units from prior (Xvfb + x11vnc) layout if present.
-systemctl disable --now agent-xvfb.service agent-vnc.service 2>/dev/null || true
-rm -f /etc/systemd/system/agent-xvfb.service /etc/systemd/system/agent-vnc.service
-systemctl daemon-reload
-
 systemctl enable agent-kasmvnc.service agent-wm.service
-# Restart so unit-file changes take effect on re-provisioning runs.
 systemctl restart agent-kasmvnc.service agent-wm.service
 
-# --- Sanity: GPU visible? ---
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "--- nvidia-smi ---"
   nvidia-smi -L || echo "WARN: nvidia-smi failed (driver mismatch with host?)"
 fi
 
-echo
 echo "Provisioning complete."
-echo "Web client: https://<container-ip>:${WEB_PORT}/vnc.html  (no auth)"

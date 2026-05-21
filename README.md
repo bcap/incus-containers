@@ -1,42 +1,55 @@
-# llm-agent
+# containers
 
-A sandbox container for running LLM tooling / coding agents.
+A personal collection of Incus container definitions and a small launcher
+to build them.
 
-Each container gives the agent its own:
+The repo is two things:
 
-- **GPU** — NVIDIA passthrough, so local models run accelerated.
-- **Desktop + browser** — A minimal Openbox/X session you can access live through VNC
-- **Network** — any web service the agent runs is reachable from your
-  host at `<container-ip>:<port>`.
-- **Workspace** — bind-mount a host directory so files round-trip
-  cleanly between you and the agent.
+- A generic launcher (`bin/new`) that composes Incus profiles, runs any
+  per-profile host prep, launches a container, and provisions it.
+- A growing set of **container manifests** (`manifests/<name>/`), one per
+  container type. Currently:
+  - **llm-agent** — GUI container for running LLM coding agents with
+    browser automation. NVIDIA passthrough, KasmVNC web client.
+
+See `CLAUDE.md` for the full manifest spec and internals.
 
 ## Requirements
 
 - Linux host with [Incus](https://linuxcontainers.org/incus/) installed.
-- NVIDIA GPU + driver on the host.
-- A modern CPU (Zen 4 / Sapphire Rapids or newer).
+- For `llm-agent` specifically: NVIDIA GPU + driver on the host, and a
+  modern CPU (Zen 4 / Sapphire Rapids or newer) for CachyOS v4 packages.
 
-## Create a container
+## Launch a container
 
 ```sh
-./new.sh my-agent
+./bin/new <manifest> <name>
 ```
 
-That's it. The script handles one-time host setup, the Incus profile,
-and provisions the container with everything it needs. Takes a couple
-of minutes the first time.
+Examples:
 
-When it finishes you'll see something like:
-
-```
-Container 'my-agent' is up.
-  IP:     10.x.y.z
-  Web:    https://10.x.y.z:8443/vnc.html   (no auth)
-  Shell:  incus exec my-agent -- sudo -iu agent
+```sh
+./bin/new llm-agent my-agent       # GUI agent container
+./bin/new --list                   # show available manifests
+./bin/new --help
 ```
 
-## Use it
+The launcher handles host prep (e.g. subuid/subgid for bind mounts),
+syncs Incus profiles from `incus/profiles/`, launches the container, and
+runs the manifest's `setup.sh` inside it. Takes a couple of minutes the
+first time.
+
+When it finishes you'll see (for `llm-agent`):
+
+```
+… => Container 'my-agent' ready.
+…    IP:    10.x.y.z
+…    Web:   https://10.x.y.z:8443/vnc.html
+…    VNC:   vncviewer 10.x.y.z:8443
+…    Shell: incus exec my-agent -- sudo -iu agent
+```
+
+## Use an llm-agent container
 
 **Watch the desktop** — open the web client in any browser (self-signed
 cert; accept the warning):
@@ -45,7 +58,7 @@ cert; accept the warning):
 https://10.x.y.z:8443/vnc.html
 ```
 
-Or use a native client against the same port:
+Or use a native VNC client against the same port:
 
 ```sh
 vncviewer 10.x.y.z:8443
@@ -68,7 +81,7 @@ incus config device add my-agent code disk \
 
 Files appear owned by your user on both sides.
 
-**Reach a web service the agent started** (e.g. a dev server on :3000):
+**Reach a web service the agent started** (e.g. a dev server on `:3000`):
 
 ```sh
 curl http://10.x.y.z:3000/
@@ -83,10 +96,13 @@ incus start my-agent                # start again
 incus delete my-agent --force       # destroy
 ```
 
-## Help
+## Add a new container type
 
-```sh
-./new.sh --help
-```
+1. Create `manifests/<name>/container.sh` with at least `DESCRIPTION`,
+   `IMAGE`, `PROFILES`.
+2. Optionally add `manifests/<name>/setup.sh` for in-container
+   provisioning.
+3. If you need a new capability, add a profile under `incus/profiles/`
+   (and an optional `<name>.host.sh` sidecar for host prep).
 
-For internals, see `CLAUDE.md`.
+See `CLAUDE.md` for the full spec.

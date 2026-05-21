@@ -1,146 +1,218 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code when working in this repository.
 
 ## What this is
 
-An Incus profile + provisioning script that builds a container for running
-**LLM coding agents and CLI tools**. Concrete requirements:
+A small framework for declaring and launching Incus containers. The repo
+holds:
 
-- NVIDIA GPU passthrough so local models can be GPU-accelerated.
-- A minimal GUI (window manager + terminal + Brave) so agents can do
-  browser automation while the user watches.
-- VNC for that observation.
-- Web services the agent runs are reachable from the host without explicit
-  port mapping — the container has an incusbr0 IP and the host routes to it.
+- **A generic launcher** (`bin/new`) that knows how to compose Incus
+  profiles, apply per-profile host prep, launch a container, and run a
+  per-container provisioning script.
+- **Composable profiles** (`incus/profiles/`) — native Incus YAML, each
+  granting one capability (GPU passthrough, bind-mount support, …).
+- **Container manifests** (`manifests/<name>/`) — one directory per
+  container type, holding a `container.sh` (declarative vars + hooks) and
+  optionally a `setup.sh` (in-container provisioning).
 
-Two artifacts:
+`llm-agent` is the first manifest. More container types will be added as
+sibling directories under `manifests/`.
 
-- `profile.yaml` — the Incus profile
-- `setup.sh` — in-container provisioning (Arch base)
+## Concepts
 
-`README.md` is the public-facing usage doc.
+Two layers, kept deliberately separate:
 
-## Architecture
+- **Profiles** are base features. They do not define what a container
+  *does*; they grant it capabilities. A profile may carry host-level
+  prerequisites in a sidecar `incus/profiles/<name>.host.sh`.
+- **Containers** (manifests) pick an image, compose profiles, set
+  capacity (`CONFIG`) and devices, and provision packages/config.
 
-**Display stack lives entirely inside the container** as two systemd
-system services owned by uid 1000:
+The repo intentionally uses **two formats only**:
 
-- `agent-kasmvnc.service` — KasmVNC's `Xvnc :99` (combined X server +
-  VNC + websocket/web client), listening on `0.0.0.0:8443` (HTTPS web UI).
-  Runs passwordless (`-SecurityTypes None -disableBasicAuth`).
-- `agent-wm.service` — `openbox-session` with `tint2` panel launched via
-  `~/.config/openbox/autostart`
+- Incus profile YAML (forced by Incus).
+- Bash (manifest + hooks + setup script).
 
-The web client (https://<ip>:8443/) is the primary access path; raw RFB
-clients (`vncviewer`) also work against the same port via KasmVNC's
-protocol multiplexing. Reached via the container's `incusbr0` IP — no
-`proxy` devices in the profile.
+No additional DSL is invented.
 
-**KasmVNC install path:** no official Arch package and no upstream
-generic tarball. We download the upstream Fedora 41 RPM (latest tagged
-release) and extract with `bsdtar -xpf <rpm> -C /`. Runtime deps come
-from pacman (`libjpeg-turbo`, `libwebp`, `gnutls`, `openssl`,
-`libxfont2`, `pixman`, `perl`, `xkeyboard-config`, `xorg-xkbcomp`,
-`xorg-xauth`, `libdrm`). Fragile to KasmVNC bumping glibc requirements
-beyond Fedora 41 — revisit if install breaks.
+## Repo layout
 
-**`raw.idmap uid 1000 1000` (+ gid)** maps the host user onto container uid
-1000. This is for convenience: bind-mounting a host `~/code` round-trips
-cleanly without ownership shifts. The required `root:1000:1` lines in
-`/etc/subuid` and `/etc/subgid` on the host are documented in README.
+```
+containers/
+├── README.md
+├── CLAUDE.md
+├── bin/
+│   └── new                          # generic launcher
+├── incus/
+│   └── profiles/
+│       ├── bind-mountable.yaml
+│       ├── bind-mountable.host.sh   # optional host-prep sidecar
+│       └── gpu-nvidia.yaml
+└── manifests/
+    └── llm-agent/
+        ├── container.sh             # declarative manifest + hooks
+        └── setup.sh                 # in-container provisioning
+```
 
-**Bind mounts are NOT in the profile** — source path varies per user. README
-documents `incus config device add ... shift=true` per container.
+## `container.sh` — manifest spec
 
-**NVIDIA via the `gpu` device** (`gputype: physical`) plus
-`nvidia.driver.capabilities: all`. The container installs its own
-`nvidia-utils` matching the host driver. `nvidia.runtime: true` would be
-cleaner but currently fails at mount-hook time on this host
-(Incus 7.0 + libnvidia-container 1.19).
+A bash file sourced by the launcher on the host.
 
-**CachyOS repos** are enabled inside the container so `brave-bin` and
-v4-optimized packages are available. Requires host CPU with x86-64-v4
-support (Zen 4+ / Sapphire Rapids+).
+### Required variables
 
-**Brave runs with `--password-store=basic`** via `~/.config/brave-flags.conf`
-to avoid kwallet noise at startup (no KDE wallet in the container).
+| Var | Type | Purpose |
+|---|---|---|
+| `DESCRIPTION` | string | One-line description. Shown in `bin/new --list`. |
+| `IMAGE` | string | Incus image ref, e.g. `images:archlinux`. |
+| `PROFILES` | array | Profile names resolved against `incus/profiles/<name>.yaml`. Empty array allowed. |
 
-## Trust model
+### Optional variables
 
-Shared uid 1000 + bind-mounted host dirs = **trusted-tool isolation**, not
-hostile-code sandbox. A container escape lands as the host user. Realistic
-threats this still mitigates:
+| Var | Default | Purpose |
+|---|---|---|
+| `CONFIG` | `()` | Flat `key=value` array. Splatted as `-c key=val` to `incus launch`. |
+| `DEVICES` | `()` | Flat array. Each entry tails `incus config device add <NAME> <entry>`. Applied after launch. |
+| `EPHEMERAL` | `0` | `1` to launch with `--ephemeral`. |
+| `RESTART_AFTER_PROVISION` | `1` | `0` to skip the post-provision restart. |
+| `SETUP_SCRIPT` | `setup.sh` | Path (relative to `CONTAINER_DIR`) of a script to push and run as `bash <path>` inside the container. Empty string skips provisioning. |
 
-- Renderer-process compromise from a visited URL: the renderer can reach
-  the in-container Xvfb (killable) and incusbr0 (firewallable). It cannot
-  reach host KWin, host PIDs, the user's keyring/SSH/GPG agents, or any
-  host process — namespace isolation is still intact.
-- Accidental damage from a buggy agent: scoped to the container's FS
-  except for whatever the user explicitly bind-mounts.
+### Hooks
 
-Things this does NOT defend against:
+All hooks run on the **host** and are optional. In-container provisioning
+is a separate script (`SETUP_SCRIPT`), not a hook.
 
-- A kernel-/LXC-level container escape — same uid as the host user.
-- Network reachability: the container sits on incusbr0 with full LAN
-  egress and no ACLs by default.
+| Hook | When | Extra scope |
+|---|---|---|
+| `hook_pre_launch` | After profile sync + host-prep, before `incus launch` | — |
+| `hook_pre_setup` | After launch + devices + network ready, before pushing `SETUP_SCRIPT` | — |
+| `hook_post_setup` | After `SETUP_SCRIPT` returns, before restart | — |
+| `hook_post_launch` | After restart, with `$IP` resolved | `$IP` |
 
-To harden for actively hostile agents, swap `raw.idmap` for
-`security.idmap.isolated: true`, drop bind mounts, and consider
-`--ephemeral` launches.
+Hooks **fail-fast**: a non-zero exit aborts the launch.
+
+### Variables and helpers exported to hooks
+
+| Name | Available in | Source |
+|---|---|---|
+| `NAME` | all hooks | CLI arg — container name |
+| `TYPE` | all hooks | CLI arg — manifest name (dir under `manifests/`) |
+| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$TYPE/` |
+| `REPO_ROOT` | all hooks | Absolute path to repo root |
+| `IMAGE` | all hooks | from manifest |
+| `PROFILES` | all hooks | from manifest |
+| `IP` | `hook_post_launch` | incusbr0 IP, resolved after restart |
+| `log()` | all hooks | Prints `<ISO-8601 timestamp> => <message>` to stderr. |
+
+`incus` is assumed on `PATH`. The setup script receives no exported
+variables — it is plain `bash <path>`, identical to invoking it manually.
+
+## Profile host-prep sidecars
+
+A profile may declare host-level prerequisites in
+`incus/profiles/<name>.host.sh`. The launcher runs it (via `bash`)
+whenever a manifest references the profile. Sidecars must be idempotent,
+have `log()` available, and abort the launch on non-zero exit. Example:
+`bind-mountable.yaml` uses `raw.idmap uid 1000 1000`, which requires
+`root:1000:1` in `/etc/subuid` + `/etc/subgid` — added by
+`bind-mountable.host.sh`.
+
+## Launcher (`bin/new`)
+
+### CLI
+
+```
+./bin/new <manifest> <name> [flags]
+./bin/new --list
+./bin/new -h | --help
+```
+
+- Positional args are required: `<manifest>` (dir under `manifests/`) and
+  `<name>` (container name).
+- Optional behavior is flag-driven (`--ephemeral`, `--no-restart`).
+
+### Flow
+
+1. Parse CLI args.
+2. Source `manifests/$TYPE/container.sh`.
+3. For each profile in `PROFILES`: sync the YAML into Incus, then run its
+   `*.host.sh` sidecar if present.
+4. Run `hook_pre_launch`.
+5. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
+6. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
+7. If `SETUP_SCRIPT` non-empty: run `hook_pre_setup`, push + run, run
+   `hook_post_setup`.
+8. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
+9. Resolve `$IP`; run `hook_post_launch`.
+
+## llm-agent specifics
+
+Notes that future-you will need when editing
+`manifests/llm-agent/setup.sh` or the manifest:
+
+- **Display stack** is two systemd services owned by uid 1000:
+  `agent-kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
+  passwordless via `-SecurityTypes None -disableBasicAuth`) and
+  `agent-wm.service` (`openbox-session` with tint2 via openbox autostart).
+- **KasmVNC install path:** no Arch package, no generic tarball. The
+  setup script downloads the upstream Fedora 41 RPM and extracts with
+  `bsdtar -xpf <rpm> -C /`. Runtime deps come from pacman. Fragile to
+  KasmVNC bumping glibc requirements beyond Fedora 41 — revisit if
+  install breaks.
+- **NVIDIA** via the `gpu-nvidia` profile (`gputype: physical` +
+  `nvidia.driver.capabilities: all`). The container installs its own
+  `nvidia-utils` matching the host driver. `nvidia.runtime: true` would
+  be cleaner but currently fails at mount-hook time on this host
+  (Incus 7.0 + libnvidia-container 1.19).
+- **CachyOS repos** are enabled inside the container so `brave-bin` and
+  v4-optimized packages are available. Requires a host CPU with
+  x86-64-v4 support (Zen 4+ / Sapphire Rapids+).
+- **Brave** runs with `--password-store=basic` via
+  `~/.config/brave-flags.conf` to avoid kwallet noise (no KDE wallet in
+  the container).
+
+### Trust model
+
+Shared uid 1000 + bind-mounted host dirs = **trusted-tool isolation**,
+not hostile-code sandbox. A container escape lands as the host user.
+Mitigates renderer-process compromise (renderer can't reach host
+agents/PIDs) and accidental damage from a buggy agent (scoped to the
+container FS). Does **not** defend against kernel/LXC escapes or unscoped
+network egress on incusbr0. Harden by swapping `raw.idmap` for
+`security.idmap.isolated: true`, dropping bind mounts, and using
+`--ephemeral`.
 
 ## Known gotchas
 
-- **subuid/subgid host prep is mandatory.** Without `root:1000:1` lines,
-  start fails with `newuidmap: uid range [1000-1001) -> [1000-1001) not allowed`.
-- **Arch base ships no fonts.** Setup script installs `noto-fonts` and
+- **subuid/subgid host prep is automated** via
+  `bind-mountable.host.sh`. Without those lines, container start fails
+  with `newuidmap: uid range [1000-1001) -> [1000-1001) not allowed`.
+- **Arch base ships no fonts.** `setup.sh` installs `noto-fonts` and
   `ttf-dejavu`; without them GUI apps render as tofu.
-- **KasmVNC RPM repack is glibc-sensitive.** Using the Fedora 41 RPM
-  on Arch works today because both ship recent glibc. If KasmVNC upstream
-  starts targeting a newer-than-Arch glibc, switch to the AUR
-  `kasmvncserver` source build.
-- **Pacman post-install hooks log permission-denied writing `/sys/.../uevent`**
-  inside unprivileged containers. Cosmetic; transactions complete.
+- **KasmVNC RPM repack is glibc-sensitive.** Works today because Fedora 41
+  and Arch both ship recent glibc. If upstream targets a newer-than-Arch
+  glibc, switch to the AUR `kasmvncserver` source build.
+- **Pacman post-install hooks log permission-denied** writing
+  `/sys/.../uevent` inside unprivileged containers. Cosmetic; transactions
+  complete. The `pac()` wrapper in `setup.sh` swallows this and explicit
+  `pacman -Q` checks verify installs.
 - **Brave produces dbus error noise** at startup (no session/system bus).
-  Navigation works; quieting requires `dbus` + a user session bus, or
+  Navigation works; quieting requires `dbus` + user session bus or
   `dbus-run-session`.
 - **CachyOS v4 SIGILLs on pre-Zen 4 hosts.** Don't run setup on a host
   whose CPU lacks x86-64-v4.
 - **KasmVNC runs without auth** (`-SecurityTypes None -disableBasicAuth`).
-  Anything on incusbr0 reaching :8443 gets a session. Add an
-  `incus network acl` if running multiple containers on the same bridge,
-  or re-enable auth by dropping `-disableBasicAuth` and provisioning
-  `~/.kasmpasswd` via `kasmvncpasswd`.
+  Anything on incusbr0 reaching `:8443` gets a session. Add an
+  `incus network acl`, or re-enable auth by dropping `-disableBasicAuth`
+  and provisioning `~/.kasmpasswd` via `kasmvncpasswd`.
 
 ## Iteration loop
 
 ```sh
 incus delete ca-test --force 2>/dev/null
-incus profile edit llm-agent < profile.yaml
-incus launch images:archlinux ca-test -p default -p llm-agent
-incus file push setup.sh ca-test/root/setup.sh --mode 0755
-incus exec ca-test -- bash /root/setup.sh
-incus restart ca-test
+./bin/new llm-agent ca-test
 ```
 
-Smoke tests are in `README.md`.
-
 If `incus profile create` or `incus profile edit` hangs from a script
-wrapper, run with an explicit `timeout` and retry — observed on this host;
-retry usually succeeds.
-
-# Ideas
-
-## Higher-fidelity GUI access (replace Xvfb + x11vnc)
-
-Current stack (Xvfb + x11vnc) is the floor for remote GUI quality. Worth
-exploring better options. GPU passthrough is **not** assumed — must work CPU-only too.
-
-Tiers considered:
-- **VNC family** (x11vnc/TigerVNC/TurboVNC): RFB, ~30fps cap, no audio, sluggish on motion. Current.
-- **KasmVNC**: VNC fork w/ H.264+WebP, web client, audio, clipboard, multi-monitor. Big jump, CPU-friendly. Lowest-friction upgrade.
-- **xrdp / NICE DCV**: middling; DCV nicer but closed source and value drops without GPU.
-- **Sunshine + Moonlight**: NVENC when GPU available, libx264/SVT fallback on CPU. Same low-latency protocol + audio + HID either way. Highest ceiling.
-- **Waypipe / X11 forward**: wrong paradigm for "watch agent use browser."
-
-Leaning: **Sunshine with encoder auto-detect** for ceiling, or **KasmVNC** if predictable CPU cost matters more than peak quality. Sunshine assumes single interactive session per container; KasmVNC friendlier for multi-user/headless-CI shapes.
+wrapper, run with an explicit `timeout` and retry — observed on this
+host; retry usually succeeds.

@@ -1,0 +1,195 @@
+#!/usr/bin/env bash
+# Generic launcher for container manifests in this repo.
+#
+# See spec.md for the full contract: required vars, hooks, exported scope.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFESTS_DIR="${REPO_ROOT}/manifests"
+PROFILES_DIR="${REPO_ROOT}/incus/profiles"
+
+log() { printf '%s => %s\n' "$(date -Iseconds)" "$*" >&2; }
+export -f log
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <manifest> <name> [flags]
+       $(basename "$0") --list
+       $(basename "$0") -h | --help
+
+Launch an Incus container from a manifest in manifests/<manifest>/container.sh.
+
+Required positional args:
+  <manifest>            Directory name under manifests/.
+  <name>                Container name to create.
+
+Flags:
+      --ephemeral       Launch with --ephemeral (overrides manifest).
+      --no-restart      Skip the post-provision restart.
+      --list            List available manifests and exit.
+  -h, --help            Show this help and exit.
+EOF
+}
+
+list_manifests() {
+  local m desc
+  for m in "${MANIFESTS_DIR}"/*/container.sh; do
+    [[ -f "$m" ]] || continue
+    desc="$(grep -m1 -E '^DESCRIPTION=' "$m" | sed -E 's/^DESCRIPTION="?([^"]*)"?$/\1/')"
+    printf '  %-20s %s\n' "$(basename "$(dirname "$m")")" "${desc:-(no description)}"
+  done
+}
+
+# ─── Arg parsing ──────────────────────────────────────────────────────────────
+EPHEMERAL_OVERRIDE=""
+RESTART_OVERRIDE=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --list)    list_manifests; exit 0 ;;
+    --ephemeral) EPHEMERAL_OVERRIDE=1 ;;
+    --no-restart) RESTART_OVERRIDE=0 ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    *) POSITIONAL+=("$1") ;;
+  esac
+  shift
+done
+
+if [[ ${#POSITIONAL[@]} -ne 2 ]]; then
+  usage >&2
+  exit 1
+fi
+
+TYPE="${POSITIONAL[0]}"
+NAME="${POSITIONAL[1]}"
+CONTAINER_DIR="${MANIFESTS_DIR}/${TYPE}"
+MANIFEST="${CONTAINER_DIR}/container.sh"
+
+[[ -f "${MANIFEST}" ]] || { echo "Manifest not found: ${MANIFEST}" >&2; exit 1; }
+
+if incus info "${NAME}" >/dev/null 2>&1; then
+  echo "Container '${NAME}' already exists. Delete it first: incus delete ${NAME} --force" >&2
+  exit 1
+fi
+
+# ─── Source the manifest ──────────────────────────────────────────────────────
+# Defaults; manifest may override.
+SETUP_SCRIPT="setup.sh"
+RESTART_AFTER_PROVISION=1
+EPHEMERAL=0
+CONFIG=()
+DEVICES=()
+
+# shellcheck disable=SC1090
+source "${MANIFEST}"
+
+# Validate required vars.
+: "${DESCRIPTION:?DESCRIPTION must be set in ${MANIFEST}}"
+: "${IMAGE:?IMAGE must be set in ${MANIFEST}}"
+declare -p PROFILES >/dev/null 2>&1 || { echo "PROFILES must be defined in ${MANIFEST}" >&2; exit 1; }
+
+# Apply CLI overrides.
+[[ -n "${EPHEMERAL_OVERRIDE}" ]] && EPHEMERAL="${EPHEMERAL_OVERRIDE}"
+[[ -n "${RESTART_OVERRIDE}" ]] && RESTART_AFTER_PROVISION="${RESTART_OVERRIDE}"
+
+export NAME TYPE CONTAINER_DIR REPO_ROOT IMAGE
+
+# Hook runner: aborts the launch on non-zero exit.
+run_hook() {
+  local hook="$1"
+  declare -F "$hook" >/dev/null || return 0
+  log "Running ${hook}"
+  "$hook"
+}
+
+# ─── Profile sync + per-profile host prep ─────────────────────────────────────
+for p in "${PROFILES[@]}"; do
+  pyaml="${PROFILES_DIR}/${p}.yaml"
+  [[ -f "${pyaml}" ]] || { echo "Missing profile YAML: ${pyaml}" >&2; exit 1; }
+  if ! incus profile show "${p}" >/dev/null 2>&1; then
+    log "Creating Incus profile '${p}'"
+    incus profile create "${p}"
+  fi
+  log "Syncing profile '${p}' from ${pyaml}"
+  incus profile edit "${p}" < "${pyaml}"
+
+  phost="${PROFILES_DIR}/${p}.host.sh"
+  if [[ -f "${phost}" ]]; then
+    log "Running host-prep for profile '${p}' (${phost})"
+    bash "${phost}"
+  fi
+done
+
+# ─── Pre-launch hook ──────────────────────────────────────────────────────────
+run_hook hook_pre_launch
+
+# ─── Launch ───────────────────────────────────────────────────────────────────
+LAUNCH_ARGS=(-p default)
+for p in "${PROFILES[@]}"; do LAUNCH_ARGS+=(-p "${p}"); done
+for kv in "${CONFIG[@]}"; do LAUNCH_ARGS+=(-c "${kv}"); done
+[[ "${EPHEMERAL}" == 1 ]] && LAUNCH_ARGS+=(--ephemeral)
+
+log "Launching '${NAME}' from ${IMAGE}"
+incus launch "${IMAGE}" "${NAME}" "${LAUNCH_ARGS[@]}"
+
+# Wait for exec readiness.
+log "Waiting for container to be ready"
+for _ in $(seq 1 30); do
+  incus exec "${NAME}" -- true >/dev/null 2>&1 && break
+  sleep 1
+done
+
+# ─── Devices ──────────────────────────────────────────────────────────────────
+for d in "${DEVICES[@]}"; do
+  log "Adding device: ${d}"
+  # shellcheck disable=SC2086
+  incus config device add "${NAME}" $d
+done
+
+# ─── Network wait (DNS resolves) ──────────────────────────────────────────────
+log "Waiting for container network"
+for _ in $(seq 1 60); do
+  incus exec "${NAME}" -- getent hosts archlinux.org >/dev/null 2>&1 && break
+  sleep 1
+done
+
+# ─── Provision ────────────────────────────────────────────────────────────────
+if [[ -n "${SETUP_SCRIPT}" ]]; then
+  setup_path="${SETUP_SCRIPT}"
+  [[ "${setup_path}" != /* ]] && setup_path="${CONTAINER_DIR}/${setup_path}"
+  if [[ ! -f "${setup_path}" ]]; then
+    echo "SETUP_SCRIPT not found: ${setup_path}" >&2
+    exit 1
+  fi
+  run_hook hook_pre_setup
+  log "Pushing ${setup_path} and running it in container"
+  incus file push "${setup_path}" "${NAME}/root/setup.sh" --mode 0755
+  incus exec "${NAME}" -- bash /root/setup.sh
+  run_hook hook_post_setup
+fi
+
+# ─── Restart ──────────────────────────────────────────────────────────────────
+if [[ "${RESTART_AFTER_PROVISION}" == 1 ]]; then
+  log "Restarting container"
+  incus restart "${NAME}"
+fi
+
+# ─── Resolve IP ───────────────────────────────────────────────────────────────
+IP=""
+log "Waiting for container IP"
+for _ in $(seq 1 60); do
+  IP="$(incus list "${NAME}" -c 4 --format csv 2>/dev/null | awk '{print $1}')"
+  [[ -n "${IP}" ]] && break
+  sleep 1
+done
+export IP
+
+if [[ -z "${IP}" ]]; then
+  log "No IP yet. Re-check with: incus list ${NAME}"
+fi
+
+# ─── Post-launch hook ─────────────────────────────────────────────────────────
+run_hook hook_post_launch
