@@ -23,15 +23,27 @@ Two artifacts:
 
 ## Architecture
 
-**Display stack lives entirely inside the container** as three systemd
+**Display stack lives entirely inside the container** as two systemd
 system services owned by uid 1000:
 
-- `agent-xvfb.service` — `Xvfb :99` (software framebuffer)
-- `agent-wm.service` — `openbox-session` with `tint2` panel launched via `~/.config/openbox/autostart`
-- `agent-vnc.service` — `x11vnc` on `0.0.0.0:5900`
+- `agent-kasmvnc.service` — KasmVNC's `Xvnc :99` (combined X server +
+  VNC + websocket/web client), listening on `0.0.0.0:8443` (HTTPS web UI).
+  Default auth: user `agent` / pass `agent` via `~/.vnc/passwd` (htpasswd-style).
+- `agent-wm.service` — `openbox-session` with `tint2` panel launched via
+  `~/.config/openbox/autostart`
 
-VNC and any agent-spawned web service are reached via the container's
-`incusbr0` IP — no `proxy` devices in the profile.
+The web client (https://<ip>:8443/) is the primary access path; raw RFB
+clients (`vncviewer`) also work against the same port via KasmVNC's
+protocol multiplexing. Reached via the container's `incusbr0` IP — no
+`proxy` devices in the profile.
+
+**KasmVNC install path:** no official Arch package and no upstream
+generic tarball. We download the upstream Fedora 41 RPM (latest tagged
+release) and extract with `bsdtar -xpf <rpm> -C /`. Runtime deps come
+from pacman (`libjpeg-turbo`, `libwebp`, `gnutls`, `openssl`,
+`libxfont2`, `pixman`, `perl`, `xkeyboard-config`, `xorg-xkbcomp`,
+`xorg-xauth`, `libdrm`). Fragile to KasmVNC bumping glibc requirements
+beyond Fedora 41 — revisit if install breaks.
 
 **`raw.idmap uid 1000 1000` (+ gid)** maps the host user onto container uid
 1000. This is for convenience: bind-mounting a host `~/code` round-trips
@@ -83,8 +95,10 @@ To harden for actively hostile agents, swap `raw.idmap` for
   start fails with `newuidmap: uid range [1000-1001) -> [1000-1001) not allowed`.
 - **Arch base ships no fonts.** Setup script installs `noto-fonts` and
   `ttf-dejavu`; without them GUI apps render as tofu.
-- **`x11vnc -bg` is fork-to-background.** Don't pass `-bg false` (parsed
-  as unknown option). For systemd, omit `-bg` (foreground).
+- **KasmVNC RPM repack is glibc-sensitive.** Using the Fedora 41 RPM
+  on Arch works today because both ship recent glibc. If KasmVNC upstream
+  starts targeting a newer-than-Arch glibc, switch to the AUR
+  `kasmvncserver` source build.
 - **Pacman post-install hooks log permission-denied writing `/sys/.../uevent`**
   inside unprivileged containers. Cosmetic; transactions complete.
 - **Brave produces dbus error noise** at startup (no session/system bus).
@@ -92,8 +106,10 @@ To harden for actively hostile agents, swap `raw.idmap` for
   `dbus-run-session`.
 - **CachyOS v4 SIGILLs on pre-Zen 4 hosts.** Don't run setup on a host
   whose CPU lacks x86-64-v4.
-- **VNC is open (`-nopw`).** Anything on incusbr0 can connect. Add an
-  `incus network acl` if running multiple containers on the same bridge.
+- **KasmVNC default credentials are `agent` / `agent`.** Anyone on
+  incusbr0 who can reach :8443 can log in. Rotate via
+  `kasmvncpasswd -u agent -wo ~/.vnc/passwd` inside the container, or
+  add an `incus network acl` if running multiple containers on the same bridge.
 
 ## Iteration loop
 

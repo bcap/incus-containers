@@ -32,16 +32,23 @@ When it finishes you'll see something like:
 ```
 Container 'my-agent' is up.
   IP:     10.x.y.z
-  VNC:    10.x.y.z:5900
+  Web:    https://10.x.y.z:8443/vnc.html   (user: agent  pass: agentagent)
   Shell:  incus exec my-agent -- sudo -iu agent
 ```
 
 ## Use it
 
-**Watch the desktop:**
+**Watch the desktop** — open the web client in any browser (self-signed
+cert; accept the warning):
+
+```
+https://10.x.y.z:8443/vnc.html
+```
+
+Or use a native client against the same port:
 
 ```sh
-vncviewer 10.x.y.z:5900
+vncviewer 10.x.y.z:8443
 ```
 
 **Drop into a shell:**

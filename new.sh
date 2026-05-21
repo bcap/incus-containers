@@ -27,9 +27,9 @@ What this script does:
      profiles above. Errors out if NAME already exists.
   4. Pushes and runs setup.sh inside the container, which
      creates the 'agent' user (uid 1000, passwordless wheel) and installs
-     the GUI stack (Xvfb + openbox + tint2 + x11vnc), Brave, nvidia-utils,
+     the GUI stack (KasmVNC + openbox + tint2), Brave, nvidia-utils,
      and the systemd services that keep them running.
-  5. Restarts the container and prints the incusbr0 IP, VNC endpoint,
+  5. Restarts the container and prints the incusbr0 IP, web-client URL,
      and a shell command.
 
 Arguments:
@@ -41,7 +41,8 @@ Options:
   -h, --help      Show this help and exit.
 
 Connect after launch:
-  vncviewer <ip>:5900
+  Open https://<ip>:8443/vnc.html in a browser (user: agent / pass: agentagent)
+  vncviewer <ip>:8443
   incus exec NAME -- sudo -iu agent
 EOF
 }
@@ -169,12 +170,13 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
-# Wait for VNC to be reachable from the host on incusbr0.
+# Wait for KasmVNC to be reachable from the host on incusbr0.
+KASM_PORT=8443
 VNC_READY=0
 if [[ -n "${IP}" ]]; then
-  echo "[host] Waiting for VNC on ${IP}:5900..."
+  echo "[host] Waiting for KasmVNC on ${IP}:${KASM_PORT}..."
   for _ in $(seq 1 30); do
-    if (exec 3<>"/dev/tcp/${IP}/5900") 2>/dev/null; then
+    if (exec 3<>"/dev/tcp/${IP}/${KASM_PORT}") 2>/dev/null; then
       exec 3<&- 3>&-
       VNC_READY=1
       break
@@ -196,13 +198,14 @@ cat <<EOF
 
 Container '${NAME}' is up.
   IP:     ${IP}
-  VNC:    ${IP}:5900  (${VNC_STATUS})
-          vncviewer ${IP}:5900
+  Web:    https://${IP}:${KASM_PORT}/vnc.html  (${VNC_STATUS})
+          user: ${USER_NAME}  pass: ${USER_NAME}${USER_NAME}
+  VNC:    vncviewer ${IP}:${KASM_PORT}
   Shell:  incus exec ${NAME} -- sudo -iu ${USER_NAME}
 EOF
 
 if [[ "${LAUNCH_VNC}" -eq 1 ]]; then
   echo
-  echo "[host] Launching ${VNC_CLIENT} ${IP}:5900..."
-  exec "${VNC_CLIENT}" "${IP}:5900"
+  echo "[host] Launching ${VNC_CLIENT} ${IP}:${KASM_PORT}..."
+  exec "${VNC_CLIENT}" "${IP}:${KASM_PORT}"
 fi
