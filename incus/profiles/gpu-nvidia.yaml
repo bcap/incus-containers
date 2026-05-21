@@ -1,0 +1,12 @@
+name: gpu-nvidia
+description: |
+  NVIDIA GPU passthrough. Exposes all driver capabilities; container must
+  install nvidia-utils matching the host driver (setup.sh handles this).
+
+config:
+  nvidia.driver.capabilities: all
+
+devices:
+  gpu:
+    type: gpu
+    gputype: physical

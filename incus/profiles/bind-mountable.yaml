@@ -1,0 +1,13 @@
+name: bind-mountable
+description: |
+  Maps host uid/gid 1000 onto container uid/gid 1000 so host directory
+  bind-mounts round-trip with matching ownership. Add mounts per-container:
+    incus config device add <name> code disk source=/home/$USER/code path=/home/agent/code shift=true
+
+  Requires `root:1000:1` in host /etc/subuid and /etc/subgid (see README).
+  Trade-off: container escape lands as the host user.
+
+config:
+  raw.idmap: |-
+    uid 1000 1000
+    gid 1000 1000
