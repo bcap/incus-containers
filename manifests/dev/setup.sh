@@ -44,13 +44,25 @@ KASM_VERSION="1.4.0"
 
 # Packages installed via pacman
 PKGS=(
-  base-devel git sudo curl libarchive wget
-  openbox tint2 konsole
-  brave-bin
+  # Toolchain / shell utilities
+  zsh sudo base-devel curl wget openssl git rust go npm uv python-uv
+  nano vim parallel pv zstd fzf eza jq miller
+  strace perf tealdeer ncdu
+
+  # GUI apps
+  konsole brave-bin
+
+  # Window manager + panel + fonts (Arch base ships no fonts)
+  openbox tint2
   noto-fonts ttf-dejavu xorg-fonts-misc
+
+  # KasmVNC runtime deps (RPM is dropped onto / and links against these)
+  # libarchive provides bsdtar, used to extract the RPM
+  libarchive libjpeg-turbo libwebp gnutls openssl libxfont2 pixman
+  perl xkeyboard-config xorg-xkbcomp xorg-xauth libdrm
+
+  # NVIDIA userspace (must match host driver version)
   nvidia-utils
-  libjpeg-turbo libwebp gnutls openssl libxfont2 pixman perl
-  xkeyboard-config xorg-xkbcomp xorg-xauth libdrm
 )
 
 # =============================================================================
@@ -103,7 +115,7 @@ pac_install() {
 }
 
 if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
-  log "enabling CachyOS repositories"
+  log "enabling CachyOS repositories and upgrading to optimized packages"
   pac_install curl tar
   tmpd="$(mktemp -d)"
   (
