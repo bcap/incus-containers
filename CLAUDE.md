@@ -154,18 +154,33 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 - `incusbr0` uses `10.10.0.1/24` (gateway). Convention for future
   bridges: keep `10.10.X.1/24`, varying the third octet per network.
 - Containers are reachable from the host as `<name>.incus` via incus's
-  built-in dnsmasq. The host resolver is wired with a systemd-resolved
-  drop-in at `/etc/systemd/resolved.conf.d/incus.conf`:
+  built-in dnsmasq. DNS routing is bound to the `incusbr0` *link* (not
+  global) by a oneshot systemd unit at
+  `/etc/systemd/system/incus-resolved.service`:
 
   ```
-  [Resolve]
-  DNS=10.10.0.1
-  Domains=~incus
+  [Unit]
+  Description=Bind *.incus DNS routing to incusbr0
+  After=incus.service
+  Requires=incus.service
+
+  [Service]
+  Type=oneshot
+  RemainAfterExit=yes
+  ExecStart=/usr/bin/resolvectl dns incusbr0 10.10.0.1
+  ExecStart=/usr/bin/resolvectl domain incusbr0 ~incus
+
+  [Install]
+  WantedBy=multi-user.target
   ```
 
-  Only `*.incus` queries are routed to `10.10.0.1`; everything else
-  goes through the normal upstream. DHCP-assigned IPs are MAC-hashed
-  and stable per container, but prefer `<name>.incus` over raw IPs.
+  Per-link is critical: a global `/etc/systemd/resolved.conf.d/*.conf`
+  drop-in with the same `DNS=` + `Domains=~incus` lines hijacks *all*
+  DNS when no other global server is configured (NetworkManager pushes
+  DNS per-link, not global). Symptom of that mistake: SRV queries time
+  out → `gpg --recv-keys` fails with "Server indicated a failure" (e.g.
+  CachyOS repo bootstrap breaks). DHCP-assigned IPs are MAC-hashed and
+  stable per container, but prefer `<name>.incus` over raw IPs.
 
 ## Known gotchas
 

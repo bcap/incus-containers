@@ -88,36 +88,45 @@ fi
 # pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
 # /sys/.../uevent in unprivileged containers and make pacman exit 1 even
 # though the transaction completed. Install, then verify with `pacman -Q`.
-# Uncommon but CachyOS mirrors occasionally 404 mid-transaction; retry on failure.
+# Note: no `-u` here — a single explicit system upgrade is run once below,
+# right after the CachyOS repos are enabled.
 pac_install() {
-  local attempt
-  for attempt in 1 2 3; do
-    pacman -Syu --needed --noconfirm "$@" || true
-    if pacman -Q "$@" >/dev/null 2>&1; then
-      return 0
-    fi
-    log "pacman install attempt ${attempt} failed; retrying"
-    sleep 3
-  done
+  pacman -S --needed --noconfirm "$@" || true
   pacman -Q "$@" >/dev/null
 }
+
+# Arch image ships a single-entry mirrorlist (mirrors.kernel.org) that has
+# been observed 301-ing to a 404. Swap to the geo-routed pkgbuild.com mirror
+# before any `pacman -Sy`.
+if ! grep -q geo.mirror.pkgbuild.com /etc/pacman.d/mirrorlist; then
+  log "swapping pacman mirrorlist to geo.mirror.pkgbuild.com"
+  echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+fi
 
 if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
   log "enabling CachyOS repositories and upgrading to optimized packages"
   pac_install curl tar
+  # cachyos-repo.sh calls `pacman-key --recv-keys`; default keyserver is
+  # flaky. Pin to keyserver.ubuntu.com (most reliable pgp keyserver).
+  if ! grep -q '^keyserver ' /etc/pacman.d/gnupg/gpg.conf 2>/dev/null; then
+    echo 'keyserver hkps://keyserver.ubuntu.com' >> /etc/pacman.d/gnupg/gpg.conf
+  fi
   tmpd="$(mktemp -d)"
   (
     cd "${tmpd}"
     curl -L -q https://mirror.cachyos.org/cachyos-repo.tar.xz | tar -xJ
     cd cachyos-repo
     # cachyos-repo.sh installs keyring + mirrorlists, then runs `pacman -Syu`.
-    # The upgrade step occasionally 404s on a v3/v4 mirror; swallow it —
-    # the keyring is what matters, and pac_install below retries the upgrade.
-    yes | ./cachyos-repo.sh --install || true
+    yes | ./cachyos-repo.sh --install
   )
   rm -rf "${tmpd}"
   pacman -Qi cachyos-keyring >/dev/null
 fi
+
+# One-shot system upgrade now that CachyOS repos are enabled. After this
+# point, `pac_install` uses `-S` (no further upgrades).
+log "system upgrade against arch + cachyos repos"
+pacman -Syu --noconfirm
 
 # =============================================================================
 # Install base packages
@@ -315,6 +324,39 @@ cat >/etc/brave/policies/managed/dev.json <<'EOF'
 }
 EOF
 chmod 0644 /etc/brave/policies/managed/dev.json
+
+# =============================================================================
+# Konsole: dark color scheme (no Plasma in container to provide one)
+# =============================================================================
+
+log "writing Konsole profile + default config"
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" \
+  "${USER_HOME}/.local/share/konsole" "${USER_HOME}/.config"
+
+cat >"${USER_HOME}/.local/share/konsole/Dev.profile" <<'EOF'
+[General]
+Name=Dev
+Parent=FALLBACK/
+Command=/bin/zsh
+
+[Appearance]
+ColorScheme=Breeze
+
+[Scrolling]
+HistoryMode=1
+HistorySize=100000
+EOF
+
+cat >"${USER_HOME}/.config/konsolerc" <<'EOF'
+[Desktop Entry]
+DefaultProfile=Dev.profile
+
+[UiSettings]
+ColorScheme=BreezeDark
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" \
+  "${USER_HOME}/.local" "${USER_HOME}/.config/konsolerc"
 
 # =============================================================================
 # Openbox: autostart (tint2) + right-click menu

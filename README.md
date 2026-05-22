@@ -91,19 +91,36 @@ curl http://10.x.y.z:3000/
 
 `incusbr0` is `10.10.0.1/24`. Containers are reachable from the host as
 `<name>.incus` (e.g. `ssh user@dev.incus`, `https://dev.incus:8443`),
-served by incus's built-in dnsmasq. Wire the host resolver once:
+served by incus's built-in dnsmasq. Wire the host resolver once by
+binding `*.incus` to the `incusbr0` link (per-link, not global — see
+note below):
 
 ```sh
-sudo tee /etc/systemd/resolved.conf.d/incus.conf >/dev/null <<'EOF'
-[Resolve]
-DNS=10.10.0.1
-Domains=~incus
+sudo tee /etc/systemd/system/incus-resolved.service >/dev/null <<'EOF'
+[Unit]
+Description=Bind *.incus DNS routing to incusbr0
+After=incus.service
+Requires=incus.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/resolvectl dns incusbr0 10.10.0.1
+ExecStart=/usr/bin/resolvectl domain incusbr0 ~incus
+
+[Install]
+WantedBy=multi-user.target
 EOF
-sudo systemctl restart systemd-resolved
+sudo systemctl daemon-reload
+sudo systemctl enable --now incus-resolved.service
 ```
 
-Only `*.incus` queries are routed to `10.10.0.1`; everything else uses
-the normal upstream.
+Do *not* use a global `/etc/systemd/resolved.conf.d/*.conf` drop-in with
+`DNS=10.10.0.1`. On NetworkManager systems that push DNS per-link, the
+drop-in becomes the only global DNS server and the `~incus` routing
+domain doesn't restrict it. Non-`*.incus` queries (notably SRV) then
+get routed to incus's dnsmasq and time out — which manifests as
+`gpg --recv-keys` failing with "Server indicated a failure".
 
 ## Manage containers
 
