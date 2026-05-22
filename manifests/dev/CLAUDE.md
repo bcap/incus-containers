@@ -56,6 +56,11 @@ in this directory.
   - Split rationale: flags handle pre-profile/renderer behavior that
     has no policy equivalent (first-run sentinel, dark UA); policies
     handle in-profile features that have no flag equivalent.
+- **Konsole** ships a `Dev.profile` (`~/.local/share/konsole/`) with
+  `ColorScheme=Breeze` and `~/.config/konsolerc` setting it as default.
+  Required because the container has no Plasma session to provide
+  system-wide dark theming — without an explicit `ColorScheme=`,
+  Konsole falls back to a light scheme.
 - **Default shell** for the unprivileged user is zsh + oh-my-zsh with a
   custom two-line prompt (exit code, time, user@host, cwd). The
   `.zshrc` is written verbatim by `setup.sh`; oh-my-zsh is installed
