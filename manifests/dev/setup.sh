@@ -91,17 +91,17 @@ fi
 # Note: no `-u` here — a single explicit system upgrade is run once below,
 # right after the CachyOS repos are enabled.
 pac_install() {
-  pacman -S --needed --noconfirm "$@" || true
+  pacman -Syu --needed --noconfirm "$@" || true
   pacman -Q "$@" >/dev/null
 }
 
 # Arch image ships a single-entry mirrorlist (mirrors.kernel.org) that has
 # been observed 301-ing to a 404. Swap to the geo-routed pkgbuild.com mirror
 # before any `pacman -Sy`.
-if ! grep -q geo.mirror.pkgbuild.com /etc/pacman.d/mirrorlist; then
-  log "swapping pacman mirrorlist to geo.mirror.pkgbuild.com"
-  echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-fi
+# if ! grep -q geo.mirror.pkgbuild.com /etc/pacman.d/mirrorlist; then
+#   log "swapping pacman mirrorlist to geo.mirror.pkgbuild.com"
+#   echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
+# fi
 
 if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
   log "enabling CachyOS repositories and upgrading to optimized packages"
@@ -117,7 +117,7 @@ if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
     curl -L -q https://mirror.cachyos.org/cachyos-repo.tar.xz | tar -xJ
     cd cachyos-repo
     # cachyos-repo.sh installs keyring + mirrorlists, then runs `pacman -Syu`.
-    yes | ./cachyos-repo.sh --install
+    yes | ./cachyos-repo.sh --install || true
   )
   rm -rf "${tmpd}"
   pacman -Qi cachyos-keyring >/dev/null
