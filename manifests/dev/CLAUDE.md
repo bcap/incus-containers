@@ -7,6 +7,12 @@ in this directory.
   `kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
   passwordless via `-SecurityTypes None -disableBasicAuth`) and
   `wm.service` (`openbox-session` with tint2 via openbox autostart).
+- **tint2 mouse bindings** are overridden in `~/.config/tint2/tint2rc`
+  (BunsenLabs convention): right-click = `toggle_iconify` (tint2 default
+  is `close` — easy footgun), middle = `close`, scroll = task cycle.
+  File is a *partial* override; tint2 falls back to compiled defaults
+  for every other key. If the panel looks broken after a tint2 upgrade,
+  copy `/etc/xdg/tint2/tint2rc` as a base and re-apply these overrides.
 - **Resolution** is dynamic: initial geometry `SCREEN_W`x`SCREEN_H`
   (default 3840x2160) acts as the cap; KasmVNC's "Remote Resizing"
   (web UI > Settings > Display) lets the client downscale to fit the

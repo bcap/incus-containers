@@ -346,6 +346,23 @@ EOF
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
 
 # =============================================================================
+# tint2: override task button mouse bindings (BunsenLabs convention).
+# tint2 default right-click = close — easy footgun. Remap to safer actions.
+# =============================================================================
+
+log "writing tint2 config"
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/tint2"
+
+cat >"${USER_HOME}/.config/tint2/tint2rc" <<'EOF'
+task_mouse_middle = close
+task_mouse_right = toggle_iconify
+task_mouse_scroll_up = prev_task
+task_mouse_scroll_down = next_task
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/tint2"
+
+# =============================================================================
 # Systemd services (kasmvnc = X+VNC+web, wm = openbox) + DISPLAY in shells
 # =============================================================================
 
