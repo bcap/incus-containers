@@ -1,8 +1,8 @@
 # shellcheck shell=bash
-# dev: GUI development container (KasmVNC + openbox + Brave, NVIDIA passthrough).
+# dev: GUI development container (KasmVNC + LXQt + Brave, NVIDIA passthrough).
 # Sourced by bin/new on the host.
 
-DESCRIPTION="GUI development container (KasmVNC + openbox + Brave, NVIDIA passthrough)"
+DESCRIPTION="GUI development container (KasmVNC + LXQt + Brave, NVIDIA passthrough)"
 IMAGE="images:archlinux"
 PROFILES=(gpu-nvidia bind-mountable)
 

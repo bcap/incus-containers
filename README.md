@@ -10,7 +10,7 @@ The repo is two things:
 - A growing set of **container manifests** (`manifests/<name>/`), one per
   container type. Currently:
   - **dev** — GUI development container. NVIDIA passthrough, KasmVNC
-    web client, Brave, openbox.
+    web client, Brave, LXQt desktop, alacritty + tmux.
 
 See `CLAUDE.md` for the full manifest spec and internals.
 

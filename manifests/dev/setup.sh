@@ -4,14 +4,15 @@
 #
 # Installs:
 #   - CachyOS repos (for brave-bin + v4-optimized packages)
-#   - KasmVNC (combined X server + VNC + web client) + openbox + tint2 + konsole + fonts
-#   - Brave browser
+#   - KasmVNC (combined X server + VNC + web client) + fonts
+#   - LXQt desktop (lxqt-session on openbox)
+#   - Brave browser + qterminal
 #   - nvidia-utils (must match host driver version)
 #   - base toolchain: git, base-devel, sudo
 #   - 'user' user (uid 1000, passwordless wheel)
 #
 # Provides two systemd services so the GUI stack survives restarts:
-#   kasmvnc (Xvnc, the combined X+VNC server), wm (openbox)
+#   kasmvnc (Xvnc, the combined X+VNC server), wm (lxqt-session)
 #
 # CachyOS-v4 packages require a host CPU with x86-64-v4 support
 # (Zen 4+ / Sapphire Rapids+).
@@ -50,21 +51,26 @@ PKGS=(
   strace perf tealdeer ncdu
 
   # GUI apps
-  konsole brave-bin
+  brave-bin
 
-  # Window manager + panel + fonts (Arch base ships no fonts)
-  openbox tint2
+  # LXQt desktop (openbox is the underlying WM) + fonts
+  lxqt-session lxqt-panel lxqt-config lxqt-qtplugin lxqt-themes
+  lxqt-runner lxqt-notificationd openbox pcmanfm-qt
+  alacritty tmux qt6ct
   noto-fonts ttf-dejavu xorg-fonts-misc
-
-  # Dark theme stack: GTK (Materia-dark, adw-gtk3-dark), icons (Papirus-Dark),
-  # Qt/KDE (Breeze + plasma-integration so Qt reads kdeglobals)
-  adw-gtk-theme materia-gtk-theme papirus-icon-theme
-  breeze plasma-integration
+  # Cursor + icon themes. xcursor-themes ships Adwaita (sane default
+  # size, so the X fallback cursor stops being a giant chevron).
+  # breeze-icons is the icon theme referenced by lxqt.conf; it depends
+  # only on qt6-base + glibc, not on KDE Frameworks/Plasma.
+  xcursor-themes breeze-icons
 
   # KasmVNC runtime deps (RPM is dropped onto / and links against these)
   # libarchive provides bsdtar, used to extract the RPM
   libarchive libjpeg-turbo libwebp gnutls openssl libxfont2 pixman
-  perl xkeyboard-config xorg-xkbcomp xorg-xauth libdrm
+  perl xkeyboard-config xorg-xkbcomp xorg-xauth libdrm xorg-xrdb
+
+  # dbus-launch — LXQt needs a session bus
+  dbus
 
   # NVIDIA userspace (must match host driver version)
   nvidia-utils
@@ -99,14 +105,6 @@ pac_install() {
   pacman -Syu --needed --noconfirm "$@" || true
   pacman -Q "$@" >/dev/null
 }
-
-# Arch image ships a single-entry mirrorlist (mirrors.kernel.org) that has
-# been observed 301-ing to a 404. Swap to the geo-routed pkgbuild.com mirror
-# before any `pacman -Sy`.
-# if ! grep -q geo.mirror.pkgbuild.com /etc/pacman.d/mirrorlist; then
-#   log "swapping pacman mirrorlist to geo.mirror.pkgbuild.com"
-#   echo 'Server = https://geo.mirror.pkgbuild.com/$repo/os/$arch' > /etc/pacman.d/mirrorlist
-# fi
 
 if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
   log "enabling CachyOS repositories and upgrading to optimized packages"
@@ -155,6 +153,33 @@ USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 log "configuring passwordless sudo for wheel"
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
 chmod 0440 /etc/sudoers.d/wheel-nopass
+
+# Disable xdg-user-dirs-update (creates Desktop/Documents/Downloads/Music/
+# Pictures/Public/Templates/Videos in $HOME on first login). Useless in a
+# headless dev container. Must be in place *before* any session starts.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
+cat >"${USER_HOME}/.config/user-dirs.conf" <<'EOF'
+enabled=False
+EOF
+cat >"${USER_HOME}/.config/user-dirs.dirs" <<EOF
+XDG_DESKTOP_DIR="\$HOME"
+XDG_DOCUMENTS_DIR="\$HOME"
+XDG_DOWNLOAD_DIR="\$HOME"
+XDG_MUSIC_DIR="\$HOME"
+XDG_PICTURES_DIR="\$HOME"
+XDG_PUBLICSHARE_DIR="\$HOME"
+XDG_TEMPLATES_DIR="\$HOME"
+XDG_VIDEOS_DIR="\$HOME"
+EOF
+chown "${USER_NAME}:${USER_NAME}" \
+  "${USER_HOME}/.config/user-dirs.conf" \
+  "${USER_HOME}/.config/user-dirs.dirs"
+
+# Belt-and-braces: rmdir the default dirs in case anything created them
+# before this script ran. Only removes empty dirs.
+for d in Desktop Documents Downloads Music Pictures Public Templates Videos Projects; do
+  rmdir "${USER_HOME}/${d}" 2>/dev/null || true
+done
 
 # =============================================================================
 # Default user shell: zsh + oh-my-zsh + custom prompt
@@ -331,222 +356,253 @@ EOF
 chmod 0644 /etc/brave/policies/managed/dev.json
 
 # =============================================================================
-# GTK theme: Materia-dark + Papirus-Dark icons + prefer-dark-theme.
-# Applies to GTK 2/3/4 apps (Brave inherits via --force-dark-mode anyway).
+# LXQt config: pick a dark theme. lxqt-themes ships Frost (clean dark
+# default). Brave + qterminal are XDG .desktop apps, so they appear in the
+# panel menu automatically; no extra wiring needed.
 # =============================================================================
 
-log "writing GTK theme config"
-install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" \
-  "${USER_HOME}/.config/gtk-3.0" "${USER_HOME}/.config/gtk-4.0"
+log "writing LXQt config"
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/lxqt"
 
-cat >"${USER_HOME}/.config/gtk-3.0/settings.ini" <<'EOF'
-[Settings]
-gtk-theme-name=Materia-dark
-gtk-icon-theme-name=Papirus-Dark
-gtk-application-prefer-dark-theme=1
-EOF
-cp "${USER_HOME}/.config/gtk-3.0/settings.ini" \
-   "${USER_HOME}/.config/gtk-4.0/settings.ini"
-
-cat >"${USER_HOME}/.gtkrc-2.0" <<'EOF'
-gtk-theme-name="Materia-dark"
-gtk-icon-theme-name="Papirus-Dark"
-EOF
-
-chown -R "${USER_NAME}:${USER_NAME}" \
-  "${USER_HOME}/.config/gtk-3.0" "${USER_HOME}/.config/gtk-4.0" \
-  "${USER_HOME}/.gtkrc-2.0"
-
-# =============================================================================
-# Qt/KDE theme: BreezeDark palette inlined into kdeglobals + plasma-integration
-# Qt platform theme (set via wm.service env). Without QT_QPA_PLATFORMTHEME=kde
-# Qt6 ignores kdeglobals and Konsole's toolbar paints in Fusion light grey.
-# =============================================================================
-
-log "writing kdeglobals with BreezeDark palette"
-cp /usr/share/color-schemes/BreezeDark.colors "${USER_HOME}/.config/kdeglobals"
-cat >>"${USER_HOME}/.config/kdeglobals" <<'EOF'
-
-[KDE]
-widgetStyle=Breeze
-LookAndFeelPackage=org.kde.breezedark.desktop
-EOF
-chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/kdeglobals"
-
-# =============================================================================
-# Konsole: dark color scheme (no Plasma in container to provide one)
-# =============================================================================
-
-log "writing Konsole profile + default config"
-install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" \
-  "${USER_HOME}/.local/share/konsole" "${USER_HOME}/.config"
-
-cat >"${USER_HOME}/.local/share/konsole/Dev.profile" <<'EOF'
+cat >"${USER_HOME}/.config/lxqt/lxqt.conf" <<'EOF'
 [General]
-Name=Dev
-Parent=FALLBACK/
-Command=/bin/zsh
+theme=leech
+icon_theme=breeze-dark
 
-[Appearance]
-ColorScheme=Breeze
-
-[Scrolling]
-HistoryMode=1
-HistorySize=100000
+[Qt]
+style=Fusion
 EOF
 
-cat >"${USER_HOME}/.config/konsolerc" <<'EOF'
-[Desktop Entry]
-DefaultProfile=Dev.profile
+# Explicit window_manager (openbox is the default but lxqt-session sometimes
+# auto-detects oddly under headless KasmVNC). [Mouse] sets the X cursor
+# theme — without it Qt apps draw their own cursor while raw X falls back
+# to a huge default chevron (two sizes on the same screen).
+cat >"${USER_HOME}/.config/lxqt/session.conf" <<'EOF'
+[General]
+window_manager=openbox
 
-[UiSettings]
-ColorScheme=BreezeDark
+[Environment]
+QT_QPA_PLATFORMTHEME=qt6ct
+XCURSOR_THEME=Adwaita
+XCURSOR_SIZE=24
+
+[Mouse]
+cursor_theme=Adwaita
+cursor_size=24
 EOF
 
-chown -R "${USER_NAME}:${USER_NAME}" \
-  "${USER_HOME}/.local" "${USER_HOME}/.config/konsolerc"
+# X cursor theme is resolved via ~/.icons/default/index.theme (inherits
+# chain). Without this, libXcursor returns the legacy bitmap cursor.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.icons/default"
+cat >"${USER_HOME}/.icons/default/index.theme" <<'EOF'
+[Icon Theme]
+Inherits=Adwaita
+EOF
 
-# =============================================================================
-# Openbox: autostart (tint2) + right-click menu
-# =============================================================================
+# Xresources: the X server reads Xcursor.theme/size for the *core cursor*
+# protocol (used by some Qt widgets' I-beam in qterminal, GTK apps, etc.).
+# Without this, those widgets render the legacy 64px bitmap cursor even
+# when XCURSOR_SIZE is set in env. Loaded via `xrdb -merge` in wm.service.
+cat >"${USER_HOME}/.Xresources" <<'EOF'
+Xcursor.theme: Adwaita
+Xcursor.size: 24
+EOF
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.Xresources"
 
-log "writing Openbox config"
+# panel.conf: seed an explicit plugin layout. Without [panel1] plugins=...
+# lxqt-panel runs with a near-empty default and looks broken (just a
+# desktop switcher + an unidentified placeholder). Order is left-to-right.
+cat >"${USER_HOME}/.config/lxqt/panel.conf" <<'EOF'
+[General]
+__userfile__=true
+iconTheme=breeze-dark
+
+[panel1]
+alignment=-1
+animation-duration=0
+background-color=#1f2329
+background-image=
+desktop=0
+font-color=@Variant(\0\0\0\x43\0\xff\xff\xff\xff\xff\xff\0)
+hidable=false
+hide-on-overlap=false
+iconSize=22
+lineCount=1
+lockPanel=false
+opacity=100
+panelSize=34
+plugins=mainmenu, quicklaunch, taskbar, spacer, statusnotifier, tray, worldclock, showdesktop
+position=Bottom
+reserve-space=true
+show-delay=0
+visible-margin=true
+width=100
+width-percent=true
+
+[mainmenu]
+type=mainmenu
+
+[quicklaunch]
+type=quicklaunch
+apps\1\desktop=/usr/share/applications/brave-browser.desktop
+apps\2\desktop=/usr/share/applications/Alacritty.desktop
+apps\3\desktop=/usr/share/applications/pcmanfm-qt.desktop
+apps\size=3
+
+[taskbar]
+type=taskbar
+buttonStyle=IconOnly
+showOnlyOneDesktopTasks=false
+showOnlyCurrentScreenTasks=false
+groupingEnabled=true
+
+[spacer]
+type=spacer
+size=10
+expandable=true
+
+[statusnotifier]
+type=statusnotifier
+
+[tray]
+type=tray
+
+[worldclock]
+type=worldclock
+formatType=custom
+customFormat=<b>HH:mm:ss</b><br/><font size="-2">yyyy-MM-dd</font>
+
+[showdesktop]
+type=showdesktop
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/lxqt" "${USER_HOME}/.icons"
+
+# Openbox root menu (right-click on desktop). Default at
+# /etc/xdg/openbox/menu.xml lists apps that aren't installed in this
+# container (gnome-terminal, firefox, gedit, etc.). Seed a minimal menu
+# with only what we provide.
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/openbox"
-
-cat >"${USER_HOME}/.config/openbox/autostart" <<'EOF'
-tint2 &
-EOF
-
-chmod 0755 "${USER_HOME}/.config/openbox/autostart"
-
-# Openbox window decorations: Onyx is the darkest theme shipping with
-# openbox-3 (Materia-dark has no openbox-3 subdir). Seed rc.xml from xdg
-# defaults if missing, then patch the <theme><name>.
-if [[ ! -f "${USER_HOME}/.config/openbox/rc.xml" ]]; then
-  cp /etc/xdg/openbox/rc.xml "${USER_HOME}/.config/openbox/rc.xml"
-fi
-sed -i 's|<name>[^<]*</name>|<name>Onyx</name>|' \
-  "${USER_HOME}/.config/openbox/rc.xml"
-
 cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
 <?xml version="1.0" encoding="UTF-8"?>
 <openbox_menu xmlns="http://openbox.org/3.4/menu">
-  <menu id="root-menu" label="Openbox">
-    <item label="Brave">
+  <menu id="root-menu" label="Openbox 3">
+    <item label="Terminal">
+      <action name="Execute"><command>alacritty</command></action>
+    </item>
+    <item label="Browser">
       <action name="Execute"><command>brave</command></action>
     </item>
-    <item label="Konsole">
-      <action name="Execute"><command>konsole</command></action>
+    <item label="File Manager">
+      <action name="Execute"><command>pcmanfm-qt</command></action>
     </item>
   </menu>
 </openbox_menu>
 EOF
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox/menu.xml"
 
-chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
+# qt6ct: Qt6 platform theme — gives Qt apps a coherent dark palette
+# (lxqt-qtplugin alone leaves many widgets light). Seed a Breeze-Dark-ish
+# palette + Fusion style. Activated via QT_QPA_PLATFORMTHEME=qt6ct.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" \
+  "${USER_HOME}/.config/qt6ct" "${USER_HOME}/.config/qt6ct/colors"
 
-# =============================================================================
-# tint2: full dark config (panel + tasks + tray + clock). Partial overrides
-# don't work — tint2 falls back to compiled defaults (wide spacing, no
-# contrast) for anything not set here. Mouse bindings follow BunsenLabs
-# convention: right-click = toggle_iconify (tint2 default = close, a footgun).
-# =============================================================================
-
-log "writing tint2 config"
-install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/tint2"
-
-cat >"${USER_HOME}/.config/tint2/tint2rc" <<'EOF'
-# Backgrounds: 1=panel, 2=task, 3=active task, 4=urgent
-rounded = 0
-border_width = 0
-background_color = #1e1e1e 90
-border_color = #000000 0
-
-rounded = 0
-border_width = 0
-background_color = #2a2a2a 100
-border_color = #000000 0
-
-rounded = 0
-border_width = 1
-background_color = #3a3a3a 100
-border_color = #5294e2 100
-
-rounded = 0
-border_width = 0
-background_color = #5294e2 100
-border_color = #000000 0
-
-# Panel
-panel_items = TSC
-panel_size = 100% 28
-panel_margin = 0 0
-panel_padding = 4 2 4
-panel_background_id = 1
-wm_menu = 1
-panel_dock = 0
-panel_position = bottom center horizontal
-panel_layer = top
-panel_monitor = all
-font_shadow = 0
-
-# Taskbar
-taskbar_mode = single_desktop
-taskbar_padding = 2 0 2
-taskbar_background_id = 0
-taskbar_active_background_id = 0
-taskbar_name = 0
-
-# Tasks
-task_text = 1
-task_icon = 1
-task_centered = 0
-urgent_nb_of_blink = 8
-task_maximum_size = 220 26
-task_padding = 6 2
-task_background_id = 2
-task_active_background_id = 3
-task_urgent_background_id = 4
-task_iconified_background_id = 2
-task_tooltip = 1
-
-task_icon_asb = 100 0 0
-task_active_icon_asb = 100 0 0
-task_urgent_icon_asb = 100 0 0
-task_iconified_icon_asb = 80 0 0
-
-task_font = Sans 9
-task_font_color = #cfcfcf 100
-task_active_font_color = #ffffff 100
-task_urgent_font_color = #ffffff 100
-task_iconified_font_color = #888888 100
-
-task_mouse_middle = close
-task_mouse_right = toggle_iconify
-task_mouse_scroll_up = prev_task
-task_mouse_scroll_down = next_task
-
-# System tray
-systray = 1
-systray_padding = 4 2 4
-systray_background_id = 0
-systray_sort = ascending
-systray_icon_size = 20
-systray_icon_asb = 100 0 0
-
-# Clock
-time1_format = %H:%M
-time1_font = Sans 10
-time2_format = %a %d %b
-time2_font = Sans 8
-clock_font_color = #cfcfcf 100
-clock_padding = 6 0
-clock_background_id = 0
+cat >"${USER_HOME}/.config/qt6ct/colors/dark.conf" <<'EOF'
+[ColorScheme]
+active_colors=#ffeff0f1, #ff31363b, #ff404040, #ff232629, #ff191b1c, #ff2a2e32, #ffeff0f1, #ffffffff, #ffeff0f1, #ff31363b, #ff232629, #ff1d2023, #ff3daee9, #ffeff0f1, #ff2980b9, #ffeff0f1, #ff31363b, #ffeff0f1, #ff31363b, #ffbf0000, #ff232629, #ffeeeeec
+disabled_colors=#ff7f8c8d, #ff31363b, #ff404040, #ff232629, #ff191b1c, #ff2a2e32, #ff7f8c8d, #ffffffff, #ff7f8c8d, #ff31363b, #ff232629, #ff1d2023, #ff3daee9, #ff7f8c8d, #ff2980b9, #ff7f8c8d, #ff31363b, #ff7f8c8d, #ff31363b, #ffbf0000, #ff232629, #ffeeeeec
+inactive_colors=#ffeff0f1, #ff31363b, #ff404040, #ff232629, #ff191b1c, #ff2a2e32, #ffeff0f1, #ffffffff, #ffeff0f1, #ff31363b, #ff232629, #ff1d2023, #ff3daee9, #ffeff0f1, #ff2980b9, #ffeff0f1, #ff31363b, #ffeff0f1, #ff31363b, #ffbf0000, #ff232629, #ffeeeeec
 EOF
 
-chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/tint2"
+cat >"${USER_HOME}/.config/qt6ct/qt6ct.conf" <<EOF
+[Appearance]
+custom_palette=true
+color_scheme_path=${USER_HOME}/.config/qt6ct/colors/dark.conf
+icon_theme=breeze-dark
+standard_dialogs=default
+style=Fusion
+
+[Interface]
+activate_item_on_single_click=1
+double_click_interval=400
+cursor_flash_time=1000
+EOF
+
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/qt6ct"
+
+# alacritty: GPU-accelerated terminal. Dark theme + sensible font size.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/alacritty"
+cat >"${USER_HOME}/.config/alacritty/alacritty.toml" <<'EOF'
+[window]
+opacity = 1.0
+padding = { x = 6, y = 6 }
+dynamic_padding = true
+
+[font]
+size = 10.0
+
+[font.normal]
+family = "Monospace"
+style = "Regular"
+
+[colors.primary]
+background = "#1f2329"
+foreground = "#dcdfe4"
+
+[colors.normal]
+black   = "#1f2329"
+red     = "#e06c75"
+green   = "#98c379"
+yellow  = "#e5c07b"
+blue    = "#61afef"
+magenta = "#c678dd"
+cyan    = "#56b6c2"
+white   = "#abb2bf"
+
+[colors.bright]
+black   = "#5c6370"
+red     = "#e06c75"
+green   = "#98c379"
+yellow  = "#e5c07b"
+blue    = "#61afef"
+magenta = "#c678dd"
+cyan    = "#56b6c2"
+white   = "#ffffff"
+EOF
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/alacritty"
+
+# Stop pcmanfm-qt from rendering the desktop. In a container its default
+# "Places" shortcuts (Computer, Network, Trash) point at non-existent
+# mounts and render as broken icons. Mask the XDG autostart entry with
+# a user override.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/autostart"
+cat >"${USER_HOME}/.config/autostart/lxqt-desktop.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Desktop
+Exec=pcmanfm-qt --desktop --profile=lxqt
+OnlyShowIn=LXQt;
+X-LXQt-Module=true
+Hidden=true
+EOF
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/autostart/lxqt-desktop.desktop"
+
+# Belt-and-braces: if a future tweak re-enables the desktop module, at
+# least drop the broken Places shortcuts from its config.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/pcmanfm-qt/lxqt"
+cat >"${USER_HOME}/.config/pcmanfm-qt/lxqt/settings.conf" <<'EOF'
+[Desktop]
+DesktopShortcuts=
+HideItems=false
+ShowHidden=false
+WallpaperMode=color
+BgColor=#1f2329
+FgColor=#ffffff
+EOF
+chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/pcmanfm-qt"
 
 # =============================================================================
-# Systemd services (kasmvnc = X+VNC+web, wm = openbox) + DISPLAY in shells
+# Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session) + DISPLAY in shells
 # =============================================================================
 
 log "installing systemd services (kasmvnc, wm)"
@@ -578,17 +634,27 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+# LXQt needs a dbus session bus. `dbus-run-session` stays in the foreground
+# (unlike `dbus-launch --exit-with-session`, which daemonizes and confuses
+# systemd's Type=simple). QT_QPA_PLATFORMTHEME=lxqt is what makes Qt apps
+# pick up lxqt-config-appearance's theming.
 cat >/etc/systemd/system/wm.service <<EOF
 [Unit]
-Description=Openbox window manager
+Description=LXQt session
 Requires=kasmvnc.service
 After=kasmvnc.service
 
 [Service]
 User=${USER_NAME}
 Environment=DISPLAY=${DISPLAY_NUM}
-Environment=QT_QPA_PLATFORMTHEME=kde
-ExecStart=/usr/bin/openbox-session
+Environment=HOME=${USER_HOME}
+Environment=XDG_RUNTIME_DIR=/tmp/runtime-${USER_NAME}
+Environment=QT_QPA_PLATFORMTHEME=qt6ct
+Environment=XCURSOR_THEME=Adwaita
+Environment=XCURSOR_SIZE=24
+ExecStartPre=/usr/bin/install -d -m 0700 -o ${USER_NAME} -g ${USER_NAME} /tmp/runtime-${USER_NAME}
+ExecStartPre=/usr/bin/xrdb -merge ${USER_HOME}/.Xresources
+ExecStart=/usr/bin/dbus-run-session /usr/bin/startlxqt
 Restart=on-failure
 
 [Install]
@@ -598,6 +664,13 @@ EOF
 cat >/etc/environment.d/10-display.conf <<EOF
 DISPLAY=${DISPLAY_NUM}
 EOF
+
+# System-wide cursor env: must be in /etc/environment (read by PAM, every
+# login shell, dbus-activated processes) — not just wm.service's
+# Environment=, which only covers direct children of lxqt-session.
+if ! grep -q '^XCURSOR_THEME=' /etc/environment 2>/dev/null; then
+  printf 'XCURSOR_THEME=Adwaita\nXCURSOR_SIZE=24\n' >>/etc/environment
+fi
 
 cat >/etc/profile.d/display.sh <<EOF
 export DISPLAY=${DISPLAY_NUM}

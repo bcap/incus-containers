@@ -1,18 +1,21 @@
 # dev container specifics
 
-Notes that future-you will need when editing `setup.sh` or `container.sh`
-in this directory.
+Notes future-you will need when editing `setup.sh` or `container.sh` in
+this directory. The desktop layer is LXQt (openbox is still the WM
+underneath); LXQt ships a coherent default panel + session manager +
+theme system so we don't hand-roll the openbox+tint2 stack.
 
 - **Display stack** is two systemd services owned by uid 1000:
   `kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
   passwordless via `-SecurityTypes None -disableBasicAuth`) and
-  `wm.service` (`openbox-session` with tint2 via openbox autostart).
-- **tint2 mouse bindings** are overridden in `~/.config/tint2/tint2rc`
-  (BunsenLabs convention): right-click = `toggle_iconify` (tint2 default
-  is `close` — easy footgun), middle = `close`, scroll = task cycle.
-  File is a *partial* override; tint2 falls back to compiled defaults
-  for every other key. If the panel looks broken after a tint2 upgrade,
-  copy `/etc/xdg/tint2/tint2rc` as a base and re-apply these overrides.
+  `wm.service` running `dbus-launch --exit-with-session
+  /usr/bin/startlxqt`. `startlxqt` spawns `lxqt-session`, which in turn
+  starts openbox + lxqt-panel + lxqt-notificationd + pcmanfm-qt.
+- **dbus session bus** is required by lxqt-session (config writers,
+  notificationd, panel). `dbus-launch --exit-with-session` provides one
+  scoped to the lxqt-session lifetime; no separate user systemd unit.
+- **XDG_RUNTIME_DIR** is pre-created by `ExecStartPre` (LXQt and Qt6 sulk
+  if it's missing).
 - **Resolution** is dynamic: initial geometry `SCREEN_W`x`SCREEN_H`
   (default 3840x2160) acts as the cap; KasmVNC's "Remote Resizing"
   (web UI > Settings > Display) lets the client downscale to fit the
@@ -43,6 +46,59 @@ in this directory.
   a dead-key layout (e.g. `us(alt-intl)` for Portuguese accents):
   without it the browser drops `Dead` keysyms and `~`, `^`, `` ` ``
   never reach the server.
+- **Theming**: `~/.config/lxqt/lxqt.conf` sets `theme=leech` (deepest
+  dark shipped by `lxqt-themes`) + `icon_theme=breeze-dark` +
+  `style=Fusion`. Qt widgets are themed by `qt6ct` (not lxqt-qtplugin):
+  `QT_QPA_PLATFORMTHEME=qt6ct` is exported by `wm.service` and by
+  `session.conf`'s `[Environment]`. The qt6ct palette is seeded at
+  `~/.config/qt6ct/colors/dark.conf` (Breeze-Dark-ish active/disabled/
+  inactive triplets) and referenced from `~/.config/qt6ct/qt6ct.conf`'s
+  `color_scheme_path`. Do NOT add a `[Fonts]` section there — qt6ct
+  encodes font as a Qt QVariant binary blob; hand-writing it produces
+  garbled text with strikeout/underline flags set. Leave fonts at Qt
+  defaults or edit via the qt6ct GUI.
+- **App menu**: lxqt-panel's main menu is XDG-driven. Brave (`brave-bin`)
+  and alacritty install `.desktop` files into `/usr/share/applications/`
+  and appear automatically; no manual menu wiring.
+- **Openbox root menu (desktop right-click)**: default at
+  `/etc/xdg/openbox/menu.xml` lists apps not installed here
+  (gnome-terminal, firefox, gedit). Override with a minimal
+  `~/.config/openbox/menu.xml` containing only Terminal / Browser /
+  File Manager. Reload with `openbox --reconfigure`.
+- **Panel layout is load-bearing**: lxqt-panel writes an almost-empty
+  `panel.conf` on first launch (no `[panel1]` section, no `plugins=`),
+  which renders as a near-blank bar with just a desktop switcher. We
+  seed `~/.config/lxqt/panel.conf` with an explicit `[panel1]` +
+  `plugins=mainmenu, quicklaunch, taskbar, spacer, statusnotifier, tray,
+  worldclock, showdesktop`. lxqt-panel preserves these on first run
+  (re-saves the file but keeps the keys). Each plugin needs its own
+  `[<name>]` section with `type=<name>` for lxqt-panel to instantiate
+  it.
+- **X cursor theme is required and four-pronged**. Without it, raw X
+  falls back to a giant bitmap cursor while Qt apps draw their own
+  smaller one, and qterminal-style I-beam widgets use yet a third size
+  (they go through the X *core cursor* protocol, which doesn't read
+  `XCURSOR_SIZE`). All four pieces are needed:
+  1. `xcursor-themes` package (ships `Adwaita`, ~3 MiB, no KDE deps).
+  2. `~/.icons/default/index.theme` with `Inherits=Adwaita`.
+  3. `[Mouse]` block in `~/.config/lxqt/session.conf` + `XCURSOR_THEME`/
+     `XCURSOR_SIZE` in `wm.service`'s `Environment=` *and* in
+     `/etc/environment` (so PAM/dbus-activated processes inherit it,
+     not just lxqt-session's direct children).
+  4. `~/.Xresources` with `Xcursor.theme: Adwaita` + `Xcursor.size: 24`,
+     merged into the X server via `xrdb -merge` in wm.service's
+     `ExecStartPre` (requires `xorg-xrdb`). This is what fixes the
+     core-cursor I-beam.
+  `breeze-icons` is added for icons; depends only on `qt6-base`, not on
+  Plasma.
+- **pcmanfm-qt desktop is masked**. By default lxqt-session autostarts
+  `pcmanfm-qt --desktop --profile=lxqt` (via
+  `/etc/xdg/autostart/lxqt-desktop.desktop`), which renders broken
+  Computer/Network/Trash shortcuts in a container. We drop a user
+  override at `~/.config/autostart/lxqt-desktop.desktop` with
+  `Hidden=true`. As belt-and-braces, `~/.config/pcmanfm-qt/lxqt/
+  settings.conf` is seeded with `DesktopShortcuts=` (empty) in case a
+  future change re-enables the module.
 - **Brave** first-run noise is suppressed two ways:
   - `~/.config/brave-flags.conf` carries pre-profile flags:
     `--password-store=basic` (no kwallet), `--no-first-run`,
@@ -56,32 +112,19 @@ in this directory.
   - Split rationale: flags handle pre-profile/renderer behavior that
     has no policy equivalent (first-run sentinel, dark UA); policies
     handle in-profile features that have no flag equivalent.
-- **Konsole** ships a `Dev.profile` (`~/.local/share/konsole/`) with
-  `ColorScheme=Breeze` and `~/.config/konsolerc` setting it as default.
-  Required because the container has no Plasma session to provide
-  system-wide dark theming — without an explicit `ColorScheme=`,
-  Konsole falls back to a light scheme.
-- **Dark desktop theming** layered across four ecosystems, none of
-  which talk to each other in this container (no Plasma session):
-  - **GTK 2/3/4** → `Materia-dark` + `Papirus-Dark` icons, written to
-    `~/.gtkrc-2.0` and `~/.config/gtk-{3,4}.0/settings.ini` with
-    `gtk-application-prefer-dark-theme=1`. Brave inherits via
-    `--force-dark-mode` (managed flag) so GTK theme barely matters
-    there, but file dialogs etc. pick it up.
-  - **Openbox window decorations** → `Onyx` (darkest theme shipping
-    with `openbox-3/` subdirs; `Materia-dark` has none). `rc.xml`
-    seeded from `/etc/xdg/openbox/rc.xml` then `<theme><name>` patched
-    via sed.
-  - **Qt/KDE** → `breeze` + `plasma-integration` packages, plus full
-    `BreezeDark.colors` palette inlined into `~/.config/kdeglobals`
-    with `[KDE] widgetStyle=Breeze`. **Critical**: Qt6 only consults
-    `kdeglobals` when `QT_QPA_PLATFORMTHEME=kde` is set; without it
-    Qt falls back to Fusion and Konsole's toolbar paints in light
-    grey even though the terminal area is dark. Env var is set in
-    `wm.service` so all GUI children inherit it. Setting it in
-    `/etc/environment.d/` is **not enough** — that's read by
-    systemd-user, not the system `wm.service`.
-  - **Icons** → `Papirus-Dark` (declared in both GTK settings files).
+- **Terminal is `alacritty`** (GPU-accelerated, ~5 MB, no toolkit deps).
+  Config at `~/.config/alacritty/alacritty.toml` sets a dark palette
+  (Atom-One-Dark-ish) + Monospace 10pt. `tmux` is installed for
+  tabs/splits (alacritty itself has neither). qterminal was removed —
+  it added little over alacritty and pulled qtermwidget deps.
+- **XDG user-dirs disabled**: by default `xdg-user-dirs-update` runs on
+  first login and creates Desktop/Documents/Downloads/Music/Pictures/
+  Public/Templates/Videos in `$HOME`. We seed
+  `~/.config/user-dirs.conf` with `enabled=False` *before* the user's
+  first session, plus a `~/.config/user-dirs.dirs` that points every
+  XDG dir at `$HOME` itself. setup.sh also `rmdir`s the defaults as
+  belt-and-braces in case anything created them first (only removes
+  empties, so safe to rerun).
 - **Default shell** for the unprivileged user is zsh + oh-my-zsh with a
   custom two-line prompt (exit code, time, user@host, cwd). The
   `.zshrc` is written verbatim by `setup.sh`; oh-my-zsh is installed
