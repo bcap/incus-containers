@@ -24,7 +24,7 @@ hook_post_launch() {
   local port=8443
   log "Container '${NAME}' ready."
   log "  IP:    ${IP}"
-  log "  Web:   https://${IP}:${port}/vnc.html"
+  log "  Web:   https://${IP}:${port}/vnc.html?enable_ime=true"
   log "  VNC:   vncviewer ${IP}:${port}"
   log "  Shell: incus exec ${NAME} -- sudo -iu user"
 }

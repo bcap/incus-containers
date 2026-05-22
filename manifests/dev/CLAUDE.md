@@ -7,6 +7,13 @@ in this directory.
   `kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
   passwordless via `-SecurityTypes None -disableBasicAuth`) and
   `wm.service` (`openbox-session` with tint2 via openbox autostart).
+- **Resolution** is dynamic: initial geometry `SCREEN_W`x`SCREEN_H`
+  (default 3840x2160) acts as the cap; KasmVNC's "Remote Resizing"
+  (web UI > Settings > Display) lets the client downscale to fit the
+  browser viewport via RandR. `max_resolution` in `kasmvnc.yaml`
+  enforces the upper bound;
+  `allow_client_to_override_kasm_server_settings: true` lets the
+  client request resizes at runtime.
 - **KasmVNC install path:** no Arch package, no generic tarball. The
   setup script downloads the upstream Fedora 41 RPM and extracts with
   `bsdtar -xpf <rpm> -C /`. Runtime deps come from pacman. Fragile to
@@ -20,11 +27,16 @@ in this directory.
 - **CachyOS repos** are enabled inside the container so `brave-bin` and
   v4-optimized packages are available. Requires a host CPU with
   x86-64-v4 support (Zen 4+ / Sapphire Rapids+).
-- **KasmVNC IME mode** is enabled in `kasmvnc.yaml` (`keyboard.ime_mode:
-  enabled`). Required when the host uses a dead-key layout (e.g.
-  `us(alt-intl)` for Portuguese accents): without it the browser drops
-  `Dead` keysyms and `~`, `^`, `` ` `` never reach the server. IME mode
-  forwards composed text instead of raw keysyms.
+- **KasmVNC IME mode** is a *client-side only* toggle (`enable_ime` in
+  the browser's localStorage, default `false`). There is no server YAML
+  key for it — the upstream KasmVNC config has no `keyboard.ime_mode`.
+  Force it on for first connect via the URL query parameter
+  `?enable_ime=true` (read by `initSetting` via `WebUtil.getConfigVar`,
+  then persisted to localStorage). `hook_post_launch` in `container.sh`
+  prints the URL with that param appended. Required when the host uses
+  a dead-key layout (e.g. `us(alt-intl)` for Portuguese accents):
+  without it the browser drops `Dead` keysyms and `~`, `^`, `` ` ``
+  never reach the server.
 - **Brave** runs with `--password-store=basic` via
   `~/.config/brave-flags.conf` to avoid kwallet noise (no KDE wallet in
   the container).

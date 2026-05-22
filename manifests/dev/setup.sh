@@ -34,8 +34,8 @@ USER_NAME="user"
 # Display + KasmVNC web server.
 DISPLAY_NUM=":99"
 WEB_PORT="8443"
-SCREEN_W=1920
-SCREEN_H=1080
+SCREEN_W=3840
+SCREEN_H=2160
 SCREEN_D=24
 
 # KasmVNC release. No Arch package exists; the upstream Fedora 41 RPM is
@@ -183,13 +183,14 @@ desktop:
   resolution:
     width: ${SCREEN_W}
     height: ${SCREEN_H}
+  max_resolution:
+    width: ${SCREEN_W}
+    height: ${SCREEN_H}
   allow_resize: true
 encoding:
   max_frame_rate: 60
   jpeg_quality: 7
   webp_quality: 7
-keyboard:
-  ime_mode: enabled
 runtime_configuration:
   allow_client_to_override_kasm_server_settings: true
 EOF
