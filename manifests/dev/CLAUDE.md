@@ -40,6 +40,11 @@ in this directory.
 - **Brave** runs with `--password-store=basic` via
   `~/.config/brave-flags.conf` to avoid kwallet noise (no KDE wallet in
   the container).
+- **Default shell** for the unprivileged user is zsh + oh-my-zsh with a
+  custom two-line prompt (exit code, time, user@host, cwd). The
+  `.zshrc` is written verbatim by `setup.sh`; oh-my-zsh is installed
+  via the upstream unattended installer with `--keep-zshrc` so our
+  `.zshrc` survives. Root keeps the default shell.
 
 ## Trust model
 

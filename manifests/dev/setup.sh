@@ -82,18 +82,6 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 # =============================================================================
-# Create unprivileged user (passwordless wheel)
-# =============================================================================
-
-if ! getent passwd "${USER_UID}" >/dev/null; then
-  log "creating user ${USER_NAME} (uid ${USER_UID})"
-  useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
-  passwd -d "${USER_NAME}"
-fi
-USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
-USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
-
-# =============================================================================
 # CachyOS repositories (more packages + optimized builds)
 # =============================================================================
 
@@ -139,12 +127,99 @@ log "installing ${#PKGS[@]} pacman packages"
 pac_install "${PKGS[@]}"
 
 # =============================================================================
-# Passwordless sudo for wheel
+# Create unprivileged user + passwordless wheel
 # =============================================================================
+
+if ! getent passwd "${USER_UID}" >/dev/null; then
+  log "creating user ${USER_NAME} (uid ${USER_UID})"
+  useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
+  passwd -d "${USER_NAME}"
+fi
+USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
+USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 
 log "configuring passwordless sudo for wheel"
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
 chmod 0440 /etc/sudoers.d/wheel-nopass
+
+# =============================================================================
+# Default user shell: zsh + oh-my-zsh + custom prompt
+# =============================================================================
+
+log "installing oh-my-zsh for ${USER_NAME}"
+if [[ ! -d "${USER_HOME}/.oh-my-zsh" ]]; then
+  runuser -l "${USER_NAME}" -c \
+    'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended --keep-zshrc'
+fi
+
+log "writing ${USER_NAME} .zshrc"
+
+cat >"${USER_HOME}/.zshrc" <<'EOF'
+export ZSH="$HOME/.oh-my-zsh"
+source $ZSH/oh-my-zsh.sh
+
+export PATH="$HOME/bin:$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH"
+
+alias -g H='| head -n 20'
+alias -g T='| tail -n 20'
+alias -g L='| less'
+alias -g S='| sort'
+alias -g SN='| sort -n'
+alias -g SU='| sort | uniq -c'
+alias -g CT='| column -t'
+alias -g NL='| wc -l'
+alias -g N='> /dev/null 2>&1'
+
+alias ls='eza --color=auto --icons=auto'
+alias ll='ls -lhg'
+alias la='ll -A'
+alias lt='ll --tree --level=2'
+
+alias diff='diff -u'
+alias grep='grep --color'
+alias tmp='cd $(mktemp -d)'
+
+function _prompt() {
+    local EXIT_CODE="$?"
+    local EXIT_CODE_OK_C=${FG[240]}
+    local EXIT_CODE_NOK_C=${FG[009]}
+    local EXIT_CODE_C="$EXIT_CODE_OK_C"
+    if [[ ! "$EXIT_CODE" -eq 0 ]]; then
+        EXIT_CODE_C="$EXIT_CODE_NOK_C"
+    fi
+
+    local DATE="$(date +%H:%M:%S)"
+    local DATE_C=${FG[247]}
+
+    local USER="%n"
+    local USER_C=${FG[208]}
+
+    local AT="@"
+    local AT_C=${FG[034]}
+
+    local HOSTNAME="%m"
+    local HOSTNAME_C=${FG[208]}
+
+    local CWD="%~"
+    local CWD_C=${FG[034]}
+
+    local SHELL_MARKER="%#"
+    local SHELL_MARKER_C=${FG[255]}
+
+    echo -e -n "${EXIT_CODE_C}${EXIT_CODE} ${DATE_C}${DATE} ${USER_C}${USER}${AT_C}${AT}${HOSTNAME_C}${HOSTNAME} ${CWD_C}${CWD}\n"
+    echo -e -n "${SHELL_MARKER_C}${SHELL_MARKER} "
+}
+setopt PROMPT_SUBST
+PROMPT='$(_prompt)'
+EOF
+
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.zshrc"
+chmod 0644 "${USER_HOME}/.zshrc"
+
+if [[ "$(getent passwd "${USER_NAME}" | cut -d: -f7)" != "/usr/bin/zsh" ]]; then
+  log "setting default shell for ${USER_NAME} to zsh"
+  chsh -s /usr/bin/zsh "${USER_NAME}"
+fi
 
 # =============================================================================
 # Install KasmVNC
@@ -166,10 +241,8 @@ log "writing VNC config + TLS cert"
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.vnc"
 
 if [[ ! -f "${USER_HOME}/.vnc/self.pem" ]]; then
-  sudo -u "${USER_NAME}" openssl req -x509 -nodes -newkey rsa:2048 \
-    -keyout "${USER_HOME}/.vnc/self.pem" \
-    -out "${USER_HOME}/.vnc/self.pem" \
-    -days 3650 -subj "/CN=dev-container" 2>/dev/null
+  runuser -l "${USER_NAME}" -c \
+    "openssl req -x509 -nodes -newkey rsa:2048 -keyout .vnc/self.pem -out .vnc/self.pem -days 3650 -subj /CN=dev-container 2>/dev/null"
   chmod 0600 "${USER_HOME}/.vnc/self.pem"
   chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/self.pem"
 fi
@@ -194,6 +267,7 @@ encoding:
 runtime_configuration:
   allow_client_to_override_kasm_server_settings: true
 EOF
+
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/kasmvnc.yaml"
 chmod 0644 "${USER_HOME}/.vnc/kasmvnc.yaml"
 
@@ -203,9 +277,11 @@ chmod 0644 "${USER_HOME}/.vnc/kasmvnc.yaml"
 
 log "writing Brave config"
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
+
 cat >"${USER_HOME}/.config/brave-flags.conf" <<'EOF'
 --password-store=basic
 EOF
+
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/brave-flags.conf"
 
 # =============================================================================
@@ -214,9 +290,11 @@ chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/brave-flags.conf"
 
 log "writing Openbox config"
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/openbox"
+
 cat >"${USER_HOME}/.config/openbox/autostart" <<'EOF'
 tint2 &
 EOF
+
 chmod 0755 "${USER_HOME}/.config/openbox/autostart"
 
 cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
@@ -232,6 +310,7 @@ cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
   </menu>
 </openbox_menu>
 EOF
+
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
 
 # =============================================================================
@@ -290,6 +369,7 @@ EOF
 cat >/etc/profile.d/display.sh <<EOF
 export DISPLAY=${DISPLAY_NUM}
 EOF
+
 chmod 0644 /etc/profile.d/display.sh
 
 log "enabling and starting kasmvnc + wm services"
