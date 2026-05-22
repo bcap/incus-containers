@@ -61,6 +61,27 @@ in this directory.
   Required because the container has no Plasma session to provide
   system-wide dark theming — without an explicit `ColorScheme=`,
   Konsole falls back to a light scheme.
+- **Dark desktop theming** layered across four ecosystems, none of
+  which talk to each other in this container (no Plasma session):
+  - **GTK 2/3/4** → `Materia-dark` + `Papirus-Dark` icons, written to
+    `~/.gtkrc-2.0` and `~/.config/gtk-{3,4}.0/settings.ini` with
+    `gtk-application-prefer-dark-theme=1`. Brave inherits via
+    `--force-dark-mode` (managed flag) so GTK theme barely matters
+    there, but file dialogs etc. pick it up.
+  - **Openbox window decorations** → `Onyx` (darkest theme shipping
+    with `openbox-3/` subdirs; `Materia-dark` has none). `rc.xml`
+    seeded from `/etc/xdg/openbox/rc.xml` then `<theme><name>` patched
+    via sed.
+  - **Qt/KDE** → `breeze` + `plasma-integration` packages, plus full
+    `BreezeDark.colors` palette inlined into `~/.config/kdeglobals`
+    with `[KDE] widgetStyle=Breeze`. **Critical**: Qt6 only consults
+    `kdeglobals` when `QT_QPA_PLATFORMTHEME=kde` is set; without it
+    Qt falls back to Fusion and Konsole's toolbar paints in light
+    grey even though the terminal area is dark. Env var is set in
+    `wm.service` so all GUI children inherit it. Setting it in
+    `/etc/environment.d/` is **not enough** — that's read by
+    systemd-user, not the system `wm.service`.
+  - **Icons** → `Papirus-Dark` (declared in both GTK settings files).
 - **Default shell** for the unprivileged user is zsh + oh-my-zsh with a
   custom two-line prompt (exit code, time, user@host, cwd). The
   `.zshrc` is written verbatim by `setup.sh`; oh-my-zsh is installed
