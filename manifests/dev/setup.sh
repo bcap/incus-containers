@@ -188,6 +188,8 @@ encoding:
   max_frame_rate: 60
   jpeg_quality: 7
   webp_quality: 7
+keyboard:
+  ime_mode: enabled
 runtime_configuration:
   allow_client_to_override_kasm_server_settings: true
 EOF
