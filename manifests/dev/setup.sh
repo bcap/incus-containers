@@ -280,9 +280,41 @@ install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
 
 cat >"${USER_HOME}/.config/brave-flags.conf" <<'EOF'
 --password-store=basic
+--no-first-run
+--no-default-browser-check
+--force-dark-mode
+--enable-features=WebUIDarkMode
 EOF
 
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/brave-flags.conf"
+
+# Managed policies: skip first-run nags, disable sign-in / rewards / AI /
+# telemetry. Applied system-wide, read on every startup. Inspect at
+# brave://policy.
+install -d -m 0755 /etc/brave/policies/managed
+cat >/etc/brave/policies/managed/dev.json <<'EOF'
+{
+  "DefaultBrowserSettingEnabled": false,
+  "BrowserSignin": 0,
+  "SyncDisabled": true,
+  "MetricsReportingEnabled": false,
+  "SearchSuggestEnabled": false,
+  "PasswordManagerEnabled": false,
+  "SafeBrowsingProtectionLevel": 0,
+  "PromotionalTabsEnabled": false,
+  "BraveRewardsDisabled": true,
+  "BraveWalletDisabled": true,
+  "BraveVPNDisabled": true,
+  "BraveAIChatEnabled": false,
+  "BraveTalkDisabled": true,
+  "BraveNewsDisabled": true,
+  "BraveP3AEnabled": false,
+  "BraveStatsPingEnabled": false,
+  "TorDisabled": true,
+  "IPFSEnabled": false
+}
+EOF
+chmod 0644 /etc/brave/policies/managed/dev.json
 
 # =============================================================================
 # Openbox: autostart (tint2) + right-click menu

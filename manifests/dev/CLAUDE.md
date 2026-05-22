@@ -37,9 +37,19 @@ in this directory.
   a dead-key layout (e.g. `us(alt-intl)` for Portuguese accents):
   without it the browser drops `Dead` keysyms and `~`, `^`, `` ` ``
   never reach the server.
-- **Brave** runs with `--password-store=basic` via
-  `~/.config/brave-flags.conf` to avoid kwallet noise (no KDE wallet in
-  the container).
+- **Brave** first-run noise is suppressed two ways:
+  - `~/.config/brave-flags.conf` carries pre-profile flags:
+    `--password-store=basic` (no kwallet), `--no-first-run`,
+    `--no-default-browser-check`, `--force-dark-mode`,
+    `--enable-features=WebUIDarkMode`.
+  - `/etc/brave/policies/managed/dev.json` carries Chromium + Brave
+    managed policies: kills sign-in, Sync, Rewards, Wallet, VPN, Leo
+    (AI Chat), Talk, News, Tor, IPFS, P3A, stats ping, safe-browsing,
+    metrics, search suggestions, password manager, default-browser
+    prompt, promotional tabs. Inspect live values at `brave://policy`.
+  - Split rationale: flags handle pre-profile/renderer behavior that
+    has no policy equivalent (first-run sentinel, dark UA); policies
+    handle in-profile features that have no flag equivalent.
 - **Default shell** for the unprivileged user is zsh + oh-my-zsh with a
   custom two-line prompt (exit code, time, user@host, cwd). The
   `.zshrc` is written verbatim by `setup.sh`; oh-my-zsh is installed
