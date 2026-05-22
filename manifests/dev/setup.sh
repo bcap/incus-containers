@@ -21,53 +21,30 @@
 
 set -euo pipefail
 
-if [[ "$(id -u)" -ne 0 ]]; then
-  echo "Run as root inside the container." >&2
-  exit 1
-fi
+log() { printf '%s => %s\n' "$(date -Iseconds)" "$*" >&2; }
 
+# =============================================================================
+# User-editable configuration
+# =============================================================================
+
+# Unprivileged user created inside the container.
 USER_UID=1000
 USER_NAME="user"
 
-if ! getent passwd "${USER_UID}" >/dev/null; then
-  useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
-  passwd -d "${USER_NAME}"
-fi
-USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
-USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
-
+# Display + KasmVNC web server.
 DISPLAY_NUM=":99"
 WEB_PORT="8443"
 SCREEN_W=1920
 SCREEN_H=1080
 SCREEN_D=24
 
+# KasmVNC release. No Arch package exists; the upstream Fedora 41 RPM is
+# extracted directly into /. Bumping past Fedora 41's glibc may break this.
 KASM_VERSION="1.4.0"
-KASM_RPM="kasmvncserver_fedora_fortyone_${KASM_VERSION}_x86_64.rpm"
-KASM_URL="https://github.com/kasmtech/KasmVNC/releases/download/v${KASM_VERSION}/${KASM_RPM}"
 
-# pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
-# /sys/.../uevent in unprivileged containers and make pacman exit 1 even
-# though the transaction completed.
-pac() { pacman "$@" || true; }
-
-if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
-  pac -Sy --needed --noconfirm wget tar
-  pacman -Q wget tar >/dev/null
-  tmpd="$(mktemp -d)"
-  (
-    cd "${tmpd}"
-    wget -q https://mirror.cachyos.org/cachyos-repo.tar.xz
-    tar xf cachyos-repo.tar.xz
-    cd cachyos-repo
-    yes | ./cachyos-repo.sh --install || true
-  )
-  rm -rf "${tmpd}"
-  pacman -Qi cachyos-keyring >/dev/null
-fi
-
+# Packages installed via pacman
 PKGS=(
-  base-devel git sudo curl libarchive
+  base-devel git sudo curl libarchive wget
   openbox tint2 konsole
   brave-bin
   noto-fonts ttf-dejavu xorg-fonts-misc
@@ -75,14 +52,82 @@ PKGS=(
   libjpeg-turbo libwebp gnutls openssl libxfont2 pixman perl
   xkeyboard-config xorg-xkbcomp xorg-xauth libdrm
 )
-pac -Sy --needed --noconfirm "${PKGS[@]}"
-pacman -Q "${PKGS[@]}" >/dev/null
 
+# =============================================================================
+# Derived values
+# =============================================================================
+
+KASM_RPM="kasmvncserver_fedora_fortyone_${KASM_VERSION}_x86_64.rpm"
+KASM_URL="https://github.com/kasmtech/KasmVNC/releases/download/v${KASM_VERSION}/${KASM_RPM}"
+
+# =============================================================================
+# Preflight
+# =============================================================================
+
+if [[ "$(id -u)" -ne 0 ]]; then
+  log "must run as root inside the container"
+  exit 1
+fi
+
+# =============================================================================
+# Create unprivileged user (passwordless wheel)
+# =============================================================================
+
+if ! getent passwd "${USER_UID}" >/dev/null; then
+  log "creating user ${USER_NAME} (uid ${USER_UID})"
+  useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
+  passwd -d "${USER_NAME}"
+fi
+USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
+USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
+
+# =============================================================================
+# CachyOS repositories (more packages + optimized builds)
+# =============================================================================
+
+# pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
+# /sys/.../uevent in unprivileged containers and make pacman exit 1 even
+# though the transaction completed. Install, then verify with `pacman -Q`.
+pac_install() {
+  pacman -Syu --needed --noconfirm "$@" || true
+  pacman -Q "$@" >/dev/null
+}
+
+if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
+  log "enabling CachyOS repositories"
+  pac_install curl tar
+  tmpd="$(mktemp -d)"
+  (
+    cd "${tmpd}"
+    curl -L -q https://mirror.cachyos.org/cachyos-repo.tar.xz | tar -xJ
+    cd cachyos-repo
+    yes | ./cachyos-repo.sh --install
+  )
+  rm -rf "${tmpd}"
+  pacman -Qi cachyos-keyring >/dev/null
+fi
+
+# =============================================================================
+# Install base packages
+# =============================================================================
+
+log "installing ${#PKGS[@]} pacman packages"
+pac_install "${PKGS[@]}"
+
+# =============================================================================
+# Passwordless sudo for wheel
+# =============================================================================
+
+log "configuring passwordless sudo for wheel"
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
 chmod 0440 /etc/sudoers.d/wheel-nopass
 
+# =============================================================================
+# Install KasmVNC
+# =============================================================================
+
 if ! /usr/bin/Xvnc -version 2>&1 | grep -qi kasm; then
-  echo "[setup] Installing KasmVNC ${KASM_VERSION}..."
+  log "installing KasmVNC ${KASM_VERSION}"
   tmpd="$(mktemp -d)"
   (
     cd "${tmpd}"
@@ -93,6 +138,7 @@ if ! /usr/bin/Xvnc -version 2>&1 | grep -qi kasm; then
   /usr/bin/Xvnc -version 2>&1 | grep -qi kasm
 fi
 
+log "writing VNC config + TLS cert"
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.vnc"
 
 if [[ ! -f "${USER_HOME}/.vnc/self.pem" ]]; then
@@ -124,12 +170,22 @@ EOF
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/kasmvnc.yaml"
 chmod 0644 "${USER_HOME}/.vnc/kasmvnc.yaml"
 
+# =============================================================================
+# Brave config (disable kwallet — no KDE session in the container)
+# =============================================================================
+
+log "writing Brave config"
 install -d -m 0700 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
 cat >"${USER_HOME}/.config/brave-flags.conf" <<'EOF'
 --password-store=basic
 EOF
 chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/brave-flags.conf"
 
+# =============================================================================
+# Openbox: autostart (tint2) + right-click menu
+# =============================================================================
+
+log "writing Openbox config"
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/openbox"
 cat >"${USER_HOME}/.config/openbox/autostart" <<'EOF'
 tint2 &
@@ -151,6 +207,11 @@ cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
 EOF
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
 
+# =============================================================================
+# Systemd services (kasmvnc = X+VNC+web, wm = openbox) + DISPLAY in shells
+# =============================================================================
+
+log "installing systemd services (kasmvnc, wm)"
 install -d -m 0755 /etc/systemd/system /etc/environment.d /etc/profile.d
 
 cat >/etc/systemd/system/kasmvnc.service <<EOF
@@ -204,13 +265,18 @@ export DISPLAY=${DISPLAY_NUM}
 EOF
 chmod 0644 /etc/profile.d/display.sh
 
+log "enabling and starting kasmvnc + wm services"
 systemctl daemon-reload
 systemctl enable kasmvnc.service wm.service
 systemctl restart kasmvnc.service wm.service
 
+# =============================================================================
+# GPU sanity check
+# =============================================================================
+
 if command -v nvidia-smi >/dev/null 2>&1; then
-  echo "--- nvidia-smi ---"
-  nvidia-smi -L || echo "WARN: nvidia-smi failed (driver mismatch with host?)"
+  log "nvidia-smi:"
+  nvidia-smi -L || log "WARN: nvidia-smi failed (driver mismatch with host?)"
 fi
 
-echo "Provisioning complete."
+log "provisioning complete"
