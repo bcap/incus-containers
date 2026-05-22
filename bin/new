@@ -77,7 +77,7 @@ fi
 
 # ─── Source the manifest ──────────────────────────────────────────────────────
 # Defaults; manifest may override.
-SETUP_SCRIPT="setup.sh"
+SETUP_SCRIPTS=(setup.sh)
 RESTART_AFTER_PROVISION=1
 EPHEMERAL=0
 CONFIG=()
@@ -90,10 +90,35 @@ source "${MANIFEST}"
 : "${DESCRIPTION:?DESCRIPTION must be set in ${MANIFEST}}"
 : "${IMAGE:?IMAGE must be set in ${MANIFEST}}"
 declare -p PROFILES >/dev/null 2>&1 || { echo "PROFILES must be defined in ${MANIFEST}" >&2; exit 1; }
+declare -p SETUP_SCRIPTS >/dev/null 2>&1 || { echo "SETUP_SCRIPTS must be an array in ${MANIFEST}" >&2; exit 1; }
 
 # Apply CLI overrides.
 [[ -n "${EPHEMERAL_OVERRIDE}" ]] && EPHEMERAL="${EPHEMERAL_OVERRIDE}"
 [[ -n "${RESTART_OVERRIDE}" ]] && RESTART_AFTER_PROVISION="${RESTART_OVERRIDE}"
+
+# Resolve + validate setup script paths now so we fail before launch.
+# Relative paths resolve against CONTAINER_DIR (so `../<other>/foo.sh`
+# lets one manifest reuse another's setup scripts). Basenames must be
+# unique — they map 1:1 to /root/<basename> in the container.
+SETUP_PATHS=()
+declare -A _seen_basenames=()
+for s in "${SETUP_SCRIPTS[@]}"; do
+  [[ -z "$s" ]] && continue
+  sp="$s"
+  [[ "$sp" != /* ]] && sp="${CONTAINER_DIR}/${sp}"
+  sp="$(realpath -m "$sp")"
+  if [[ ! -f "$sp" ]]; then
+    echo "Setup script not found: $sp (from SETUP_SCRIPTS entry '$s')" >&2
+    exit 1
+  fi
+  b="$(basename "$sp")"
+  if [[ -n "${_seen_basenames[$b]:-}" ]]; then
+    echo "Setup script basename collision: '$b' appears more than once in SETUP_SCRIPTS" >&2
+    exit 1
+  fi
+  _seen_basenames[$b]=1
+  SETUP_PATHS+=("$sp")
+done
 
 export NAME TYPE CONTAINER_DIR REPO_ROOT IMAGE
 
@@ -157,17 +182,16 @@ for _ in $(seq 1 60); do
 done
 
 # ─── Provision ────────────────────────────────────────────────────────────────
-if [[ -n "${SETUP_SCRIPT}" ]]; then
-  setup_path="${SETUP_SCRIPT}"
-  [[ "${setup_path}" != /* ]] && setup_path="${CONTAINER_DIR}/${setup_path}"
-  if [[ ! -f "${setup_path}" ]]; then
-    echo "SETUP_SCRIPT not found: ${setup_path}" >&2
-    exit 1
-  fi
+# Paths already resolved + validated above; hooks fire once around the
+# whole sequence (not per-script).
+if [[ ${#SETUP_PATHS[@]} -gt 0 ]]; then
   run_hook hook_pre_setup
-  log "Pushing ${setup_path} and running it in container"
-  incus file push "${setup_path}" "${NAME}/root/setup.sh" --mode 0755
-  incus exec "${NAME}" -- bash /root/setup.sh
+  for sp in "${SETUP_PATHS[@]}"; do
+    b="$(basename "$sp")"
+    log "Pushing ${sp} and running /root/${b} in container"
+    incus file push "$sp" "${NAME}/root/${b}" --mode 0755
+    incus exec "${NAME}" -- bash "/root/${b}"
+  done
   run_hook hook_post_setup
 fi
 

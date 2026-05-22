@@ -1,21 +1,17 @@
 #!/usr/bin/env bash
-# Provisions a dev container. Run as root inside the container:
-#   bash /root/setup.sh
+# GUI setup. Run as root inside the container:
+#   bash /root/gui.sh
+#
+# Assumes ../dev/base.sh and ../dev/user.sh already ran (CachyOS repos
+# enabled, 'user' uid 1000 created).
 #
 # Installs:
-#   - CachyOS repos (for brave-bin + v4-optimized packages)
 #   - KasmVNC (combined X server + VNC + web client) + fonts
 #   - LXQt desktop (lxqt-session on openbox)
-#   - Brave browser + qterminal
-#   - nvidia-utils (must match host driver version)
-#   - base toolchain: git, base-devel, sudo
-#   - 'user' user (uid 1000, passwordless wheel)
+#   - Brave browser, alacritty, qt6ct theming
 #
 # Provides two systemd services so the GUI stack survives restarts:
 #   kasmvnc (Xvnc, the combined X+VNC server), wm (lxqt-session)
-#
-# CachyOS-v4 packages require a host CPU with x86-64-v4 support
-# (Zen 4+ / Sapphire Rapids+).
 #
 # Access:
 #   https://<container-ip>:8443/   (web client, self-signed cert, no auth)
@@ -24,13 +20,7 @@ set -euo pipefail
 
 log() { printf '%s => %s\n' "$(date -Iseconds)" "$*" >&2; }
 
-# =============================================================================
-# User-editable configuration
-# =============================================================================
-
-# Unprivileged user created inside the container.
 USER_UID=1000
-USER_NAME="user"
 
 # Display + KasmVNC web server.
 DISPLAY_NUM=":99"
@@ -43,20 +33,14 @@ SCREEN_D=24
 # extracted directly into /. Bumping past Fedora 41's glibc may break this.
 KASM_VERSION="1.4.0"
 
-# Packages installed via pacman
 PKGS=(
-  # Toolchain / shell utilities
-  zsh sudo base-devel curl wget openssl git rust go npm uv python-uv
-  nano vim parallel pv zstd fzf eza jq miller
-  strace perf tealdeer ncdu
-
   # GUI apps
   brave-bin
 
   # LXQt desktop (openbox is the underlying WM) + fonts
   lxqt-session lxqt-panel lxqt-config lxqt-qtplugin lxqt-themes
   lxqt-runner lxqt-notificationd openbox pcmanfm-qt
-  alacritty tmux qt6ct
+  alacritty qt6ct
   noto-fonts ttf-dejavu xorg-fonts-misc
   # Cursor + icon themes. xcursor-themes ships Adwaita (sane default
   # size, so the X fallback cursor stops being a giant chevron).
@@ -71,92 +55,39 @@ PKGS=(
 
   # dbus-launch — LXQt needs a session bus
   dbus
-
-  # NVIDIA userspace (must match host driver version)
-  nvidia-utils
 )
-
-# =============================================================================
-# Derived values
-# =============================================================================
 
 KASM_RPM="kasmvncserver_fedora_fortyone_${KASM_VERSION}_x86_64.rpm"
 KASM_URL="https://github.com/kasmtech/KasmVNC/releases/download/v${KASM_VERSION}/${KASM_RPM}"
-
-# =============================================================================
-# Preflight
-# =============================================================================
 
 if [[ "$(id -u)" -ne 0 ]]; then
   log "must run as root inside the container"
   exit 1
 fi
 
-# =============================================================================
-# CachyOS repositories (more packages + optimized builds)
-# =============================================================================
+if ! getent passwd "${USER_UID}" >/dev/null; then
+  log "expected uid ${USER_UID} to exist (run dev/user.sh first)"
+  exit 1
+fi
+USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
+USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 
-# pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
-# /sys/.../uevent in unprivileged containers and make pacman exit 1 even
-# though the transaction completed. Install, then verify with `pacman -Q`.
-# Note: no `-u` here — a single explicit system upgrade is run once below,
-# right after the CachyOS repos are enabled.
+# See dev/base.sh for the rationale on the `|| true` + `pacman -Q` dance.
 pac_install() {
   pacman -Syu --needed --noconfirm "$@" || true
   pacman -Q "$@" >/dev/null
 }
 
-if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
-  log "enabling CachyOS repositories and upgrading to optimized packages"
-  pac_install curl tar
-  # cachyos-repo.sh calls `pacman-key --recv-keys`; default keyserver is
-  # flaky. Pin to keyserver.ubuntu.com (most reliable pgp keyserver).
-  if ! grep -q '^keyserver ' /etc/pacman.d/gnupg/gpg.conf 2>/dev/null; then
-    echo 'keyserver hkps://keyserver.ubuntu.com' >> /etc/pacman.d/gnupg/gpg.conf
-  fi
-  tmpd="$(mktemp -d)"
-  (
-    cd "${tmpd}"
-    curl -L -q https://mirror.cachyos.org/cachyos-repo.tar.xz | tar -xJ
-    cd cachyos-repo
-    # cachyos-repo.sh installs keyring + mirrorlists, then runs `pacman -Syu`.
-    yes | ./cachyos-repo.sh --install || true
-  )
-  rm -rf "${tmpd}"
-  pacman -Qi cachyos-keyring >/dev/null
-fi
-
-# One-shot system upgrade now that CachyOS repos are enabled. After this
-# point, `pac_install` uses `-S` (no further upgrades).
-log "system upgrade against arch + cachyos repos"
-pacman -Syu --noconfirm
-
-# =============================================================================
-# Install base packages
-# =============================================================================
-
 log "installing ${#PKGS[@]} pacman packages"
 pac_install "${PKGS[@]}"
 
 # =============================================================================
-# Create unprivileged user + passwordless wheel
+# Disable xdg-user-dirs
 # =============================================================================
-
-if ! getent passwd "${USER_UID}" >/dev/null; then
-  log "creating user ${USER_NAME} (uid ${USER_UID})"
-  useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
-  passwd -d "${USER_NAME}"
-fi
-USER_NAME="$(getent passwd "${USER_UID}" | cut -d: -f1)"
-USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
-
-log "configuring passwordless sudo for wheel"
-echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
-chmod 0440 /etc/sudoers.d/wheel-nopass
-
-# Disable xdg-user-dirs-update (creates Desktop/Documents/Downloads/Music/
-# Pictures/Public/Templates/Videos in $HOME on first login). Useless in a
-# headless dev container. Must be in place *before* any session starts.
+# xdg-user-dirs-update is triggered by the session manager (lxqt-session)
+# on first login and creates Desktop/Documents/Downloads/Music/Pictures/
+# Public/Templates/Videos in $HOME. Useless in a dev container. Must be
+# in place *before* the first session starts.
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
 cat >"${USER_HOME}/.config/user-dirs.conf" <<'EOF'
 enabled=False
@@ -180,85 +111,6 @@ chown "${USER_NAME}:${USER_NAME}" \
 for d in Desktop Documents Downloads Music Pictures Public Templates Videos Projects; do
   rmdir "${USER_HOME}/${d}" 2>/dev/null || true
 done
-
-# =============================================================================
-# Default user shell: zsh + oh-my-zsh + custom prompt
-# =============================================================================
-
-log "installing oh-my-zsh for ${USER_NAME}"
-if [[ ! -d "${USER_HOME}/.oh-my-zsh" ]]; then
-  runuser -l "${USER_NAME}" -c \
-    'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended --keep-zshrc'
-fi
-
-log "writing ${USER_NAME} .zshrc"
-
-cat >"${USER_HOME}/.zshrc" <<'EOF'
-export ZSH="$HOME/.oh-my-zsh"
-source $ZSH/oh-my-zsh.sh
-
-export PATH="$HOME/bin:$HOME/.local/bin:$HOME/go/bin:$HOME/.cargo/bin:$PATH"
-
-alias -g H='| head -n 20'
-alias -g T='| tail -n 20'
-alias -g L='| less'
-alias -g S='| sort'
-alias -g SN='| sort -n'
-alias -g SU='| sort | uniq -c'
-alias -g CT='| column -t'
-alias -g NL='| wc -l'
-alias -g N='> /dev/null 2>&1'
-
-alias ls='eza --color=auto --icons=auto'
-alias ll='ls -lhg'
-alias la='ll -A'
-alias lt='ll --tree --level=2'
-
-alias diff='diff -u'
-alias grep='grep --color'
-alias tmp='cd $(mktemp -d)'
-
-function _prompt() {
-    local EXIT_CODE="$?"
-    local EXIT_CODE_OK_C=${FG[240]}
-    local EXIT_CODE_NOK_C=${FG[009]}
-    local EXIT_CODE_C="$EXIT_CODE_OK_C"
-    if [[ ! "$EXIT_CODE" -eq 0 ]]; then
-        EXIT_CODE_C="$EXIT_CODE_NOK_C"
-    fi
-
-    local DATE="$(date +%H:%M:%S)"
-    local DATE_C=${FG[247]}
-
-    local USER="%n"
-    local USER_C=${FG[208]}
-
-    local AT="@"
-    local AT_C=${FG[034]}
-
-    local HOSTNAME="%m"
-    local HOSTNAME_C=${FG[208]}
-
-    local CWD="%~"
-    local CWD_C=${FG[034]}
-
-    local SHELL_MARKER="%#"
-    local SHELL_MARKER_C=${FG[255]}
-
-    echo -e -n "${EXIT_CODE_C}${EXIT_CODE} ${DATE_C}${DATE} ${USER_C}${USER}${AT_C}${AT}${HOSTNAME_C}${HOSTNAME} ${CWD_C}${CWD}\n"
-    echo -e -n "${SHELL_MARKER_C}${SHELL_MARKER} "
-}
-setopt PROMPT_SUBST
-PROMPT='$(_prompt)'
-EOF
-
-chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.zshrc"
-chmod 0644 "${USER_HOME}/.zshrc"
-
-if [[ "$(getent passwd "${USER_NAME}" | cut -d: -f7)" != "/usr/bin/zsh" ]]; then
-  log "setting default shell for ${USER_NAME} to zsh"
-  chsh -s /usr/bin/zsh "${USER_NAME}"
-fi
 
 # =============================================================================
 # Install KasmVNC
@@ -683,13 +535,4 @@ systemctl daemon-reload
 systemctl enable kasmvnc.service wm.service
 systemctl restart kasmvnc.service wm.service
 
-# =============================================================================
-# GPU sanity check
-# =============================================================================
-
-if command -v nvidia-smi >/dev/null 2>&1; then
-  log "nvidia-smi:"
-  nvidia-smi -L || log "WARN: nvidia-smi failed (driver mismatch with host?)"
-fi
-
-log "provisioning complete"
+log "gui setup complete"

@@ -6,19 +6,23 @@ to build them.
 The repo is two things:
 
 - A generic launcher (`bin/new`) that composes Incus profiles, runs any
-  per-profile host prep, launches a container, and provisions it.
+  per-profile host prep, launches a container, and provisions it with a
+  list of setup scripts (which may be shared across manifests).
 - A growing set of **container manifests** (`manifests/<name>/`), one per
   container type. Currently:
-  - **dev** — GUI development container. NVIDIA passthrough, KasmVNC
-    web client, Brave, LXQt desktop, alacritty + tmux.
+  - **dev** — headless dev container. Arch + CachyOS repos, base
+    toolchain, `user` uid 1000 with zsh, NVIDIA passthrough.
+  - **dev-gui** — `dev` plus a KasmVNC web desktop (LXQt + Brave +
+    alacritty + tmux). Reuses `dev`'s `base.sh` and `user.sh` via
+    relative paths in `SETUP_SCRIPTS`.
 
 See `CLAUDE.md` for the full manifest spec and internals.
 
 ## Requirements
 
 - Linux host with [Incus](https://linuxcontainers.org/incus/) installed.
-- For `dev` specifically: NVIDIA GPU + driver on the host, and a
-  modern CPU (Zen 4 / Sapphire Rapids or newer) for CachyOS v4 packages.
+- For `dev` / `dev-gui`: NVIDIA GPU + driver on the host, and a modern
+  CPU (Zen 4 / Sapphire Rapids or newer) for CachyOS v4 packages.
 
 ## Launch a container
 
@@ -29,30 +33,34 @@ See `CLAUDE.md` for the full manifest spec and internals.
 Examples:
 
 ```sh
-./bin/new dev my-dev               # GUI development container
+./bin/new dev my-dev               # headless dev container
+./bin/new dev-gui my-desktop       # same, plus KasmVNC desktop
 ./bin/new --list                   # show available manifests
 ./bin/new --help
 ```
 
 The launcher handles host prep (e.g. subuid/subgid for bind mounts),
 syncs Incus profiles from `incus/profiles/`, launches the container, and
-runs the manifest's `setup.sh` inside it. Takes a couple of minutes the
-first time.
+runs each script in the manifest's `SETUP_SCRIPTS` array inside it (each
+gets pushed to `/root/<basename>` and executed as `bash`, in order).
+Takes a couple of minutes the first time.
 
-When it finishes you'll see (for `dev`):
+When it finishes you'll see (for `dev-gui`):
 
 ```
-… => Container 'my-dev' ready.
+… => Container 'my-desktop' ready.
 …    IP:    10.x.y.z
 …    Web:   https://10.x.y.z:8443/vnc.html
 …    VNC:   vncviewer 10.x.y.z:8443
-…    Shell: incus exec my-dev -- sudo -iu user
+…    Shell: incus exec my-desktop -- sudo -iu user
 ```
+
+`dev` (headless) prints just the IP + shell hint — no KasmVNC.
 
 ## Use a dev container
 
-**Watch the desktop** — open the web client in any browser (self-signed
-cert; accept the warning):
+**Watch the desktop** (`dev-gui` only) — open the web client in any
+browser (self-signed cert; accept the warning):
 
 ```
 https://10.x.y.z:8443/vnc.html
@@ -135,8 +143,13 @@ incus delete my-dev --force       # destroy
 
 1. Create `manifests/<name>/container.sh` (bash, sourced on the host by
    `bin/new`). Set at least `DESCRIPTION`, `IMAGE`, `PROFILES`.
-2. Optionally add `manifests/<name>/setup.sh` for in-container
-   provisioning (pushed and run as `bash <path>` inside the container).
+2. Drop one or more setup scripts into `manifests/<name>/` and list them
+   in `SETUP_SCRIPTS=(...)`. Each is pushed to `/root/<basename>` and
+   run as `bash` inside the container, in order. Relative paths resolve
+   against the manifest's directory, so `../<other-manifest>/foo.sh`
+   lets you reuse another manifest's scripts (see `dev-gui` reusing
+   `dev/base.sh` + `dev/user.sh`). Defaults to `(setup.sh)` if unset;
+   set to `()` to skip provisioning entirely.
 3. If you need a new capability, add a profile under `incus/profiles/`
    (and an optional `<name>.host.sh` sidecar for host prep).
 
@@ -158,15 +171,15 @@ incus delete my-dev --force       # destroy
 | `DEVICES` | `()` | Flat array. Each entry tails `incus config device add <NAME> <entry>`. Applied after launch. |
 | `EPHEMERAL` | `0` | `1` to launch with `--ephemeral`. |
 | `RESTART_AFTER_PROVISION` | `1` | `0` to skip the post-provision restart. |
-| `SETUP_SCRIPT` | `setup.sh` | Path (relative to `CONTAINER_DIR`) of a script pushed and run inside the container. Empty string skips provisioning. |
+| `SETUP_SCRIPTS` | `(setup.sh)` | Bash array of script paths. Each is pushed to `/root/<basename>` and run as `bash`, in order. Relative paths resolve against `CONTAINER_DIR`, so `../<other-manifest>/foo.sh` lets one manifest reuse another's scripts. Basenames must be unique across the array. Empty array skips provisioning. |
 
 **Hooks** (all run on the host, all optional, fail-fast on non-zero exit)
 
 | Hook | When | Extra scope |
 |---|---|---|
 | `hook_pre_launch` | After profile sync + host-prep, before `incus launch` | — |
-| `hook_pre_setup` | After launch + devices + network ready, before pushing `SETUP_SCRIPT` | — |
-| `hook_post_setup` | After `SETUP_SCRIPT` returns, before restart | — |
+| `hook_pre_setup` | Once, after launch + devices + network ready, before pushing the first setup script | — |
+| `hook_post_setup` | Once, after the last setup script returns, before restart | — |
 | `hook_post_launch` | After restart, with `$IP` resolved | `$IP` |
 
 **Variables and helpers exported to hooks**

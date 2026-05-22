@@ -9,15 +9,19 @@ holds:
 
 - **A generic launcher** (`bin/new`) that knows how to compose Incus
   profiles, apply per-profile host prep, launch a container, and run a
-  per-container provisioning script.
+  list of per-container provisioning scripts.
 - **Composable profiles** (`incus/profiles/`) — native Incus YAML, each
   granting one capability (GPU passthrough, bind-mount support, …).
 - **Container manifests** (`manifests/<name>/`) — one directory per
   container type, holding a `container.sh` (declarative vars + hooks) and
-  optionally a `setup.sh` (in-container provisioning).
+  one or more setup scripts (in-container provisioning). Manifests can
+  reuse setup scripts from sibling manifests via relative paths
+  (e.g. `../dev/base.sh`) — `dev-gui` is built on `dev`'s base+user
+  scripts plus its own `gui.sh`.
 
-`dev` is the first manifest. More container types will be added as
-sibling directories under `manifests/`.
+Current manifests: `dev` (headless base + user), `dev-gui` (`dev` +
+LXQt/KasmVNC GUI). More will be added as sibling directories under
+`manifests/`.
 
 ## Concepts
 
@@ -32,7 +36,7 @@ Two layers, kept deliberately separate:
 The repo intentionally uses **two formats only**:
 
 - Incus profile YAML (forced by Incus).
-- Bash (manifest + hooks + setup script).
+- Bash (manifest + hooks + setup scripts).
 
 No additional DSL is invented.
 
@@ -50,9 +54,13 @@ containers/
 │       ├── bind-mountable.host.sh   # optional host-prep sidecar
 │       └── gpu-nvidia.yaml
 └── manifests/
-    └── dev/
-        ├── container.sh             # declarative manifest + hooks
-        └── setup.sh                 # in-container provisioning
+    ├── dev/
+    │   ├── container.sh             # declarative manifest + hooks
+    │   ├── base.sh                  # CachyOS repos + base toolchain
+    │   └── user.sh                  # 'user' uid 1000 + zsh
+    └── dev-gui/
+        ├── container.sh             # reuses ../dev/{base,user}.sh
+        └── gui.sh                   # LXQt + KasmVNC + Brave
 ```
 
 ## `container.sh` — manifest spec
@@ -75,19 +83,22 @@ A bash file sourced by the launcher on the host.
 | `DEVICES` | `()` | Flat array. Each entry tails `incus config device add <NAME> <entry>`. Applied after launch. |
 | `EPHEMERAL` | `0` | `1` to launch with `--ephemeral`. |
 | `RESTART_AFTER_PROVISION` | `1` | `0` to skip the post-provision restart. |
-| `SETUP_SCRIPT` | `setup.sh` | Path (relative to `CONTAINER_DIR`) of a script to push and run as `bash <path>` inside the container. Empty string skips provisioning. |
+| `SETUP_SCRIPTS` | `(setup.sh)` | Bash array of script paths. Each is pushed to `/root/<basename>` and run as `bash /root/<basename>` inside the container, in order. Relative paths resolve against `CONTAINER_DIR` — `../<other-manifest>/foo.sh` lets one manifest reuse another's scripts. Basenames must be unique across the array. Empty array skips provisioning. |
 
 ### Hooks
 
 All hooks run on the **host** and are optional. In-container provisioning
-is a separate script (`SETUP_SCRIPT`), not a hook.
+is done by the `SETUP_SCRIPTS` array, not by hooks.
 
 | Hook | When | Extra scope |
 |---|---|---|
 | `hook_pre_launch` | After profile sync + host-prep, before `incus launch` | — |
-| `hook_pre_setup` | After launch + devices + network ready, before pushing `SETUP_SCRIPT` | — |
-| `hook_post_setup` | After `SETUP_SCRIPT` returns, before restart | — |
+| `hook_pre_setup` | After launch + devices + network ready, before pushing the *first* setup script | — |
+| `hook_post_setup` | After the *last* setup script returns, before restart | — |
 | `hook_post_launch` | After restart, with `$IP` resolved | `$IP` |
+
+`hook_pre_setup` / `hook_post_setup` fire **once** around the whole
+`SETUP_SCRIPTS` sequence — not per-script.
 
 Hooks **fail-fast**: a non-zero exit aborts the launch.
 
@@ -104,8 +115,12 @@ Hooks **fail-fast**: a non-zero exit aborts the launch.
 | `IP` | `hook_post_launch` | incusbr0 IP, resolved after restart |
 | `log()` | all hooks | Prints `<ISO-8601 timestamp> => <message>` to stderr. |
 
-`incus` is assumed on `PATH`. The setup script receives no exported
-variables — it is plain `bash <path>`, identical to invoking it manually.
+`incus` is assumed on `PATH`. Setup scripts receive no exported
+variables — each is plain `bash /root/<basename>`, identical to invoking
+it manually. Because scripts are executed (not sourced) and run
+independently, each one needs its own helpers (`log`, `pac_install`,
+root check, etc.); state from one does not survive to the next, beyond
+what the script writes into the container's filesystem.
 
 ## Profile host-prep sidecars
 
@@ -138,16 +153,21 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 3. For each profile in `PROFILES`: sync the YAML into Incus, then run its
    `*.host.sh` sidecar if present.
 4. Run `hook_pre_launch`.
-5. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
-6. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
-7. If `SETUP_SCRIPT` non-empty: run `hook_pre_setup`, push + run, run
+5. Resolve + validate every `SETUP_SCRIPTS` path (relative → joined with
+   `CONTAINER_DIR`, then `realpath -m`). Fails fast on missing files or
+   basename collisions, before launching anything.
+6. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
+7. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
+8. If `SETUP_SCRIPTS` non-empty: run `hook_pre_setup`, then for each
+   resolved path push to `/root/<basename>` and `bash` it; finally run
    `hook_post_setup`.
-8. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
-9. Resolve `$IP`; run `hook_post_launch`.
+9. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
+10. Resolve `$IP`; run `hook_post_launch`.
 
 ## Per-manifest notes
 
 - `dev`: see [manifests/dev/CLAUDE.md](manifests/dev/CLAUDE.md).
+- `dev-gui`: see [manifests/dev-gui/CLAUDE.md](manifests/dev-gui/CLAUDE.md).
 
 ## Networking
 
@@ -187,16 +207,15 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 - **subuid/subgid host prep is automated** via
   `bind-mountable.host.sh`. Without those lines, container start fails
   with `newuidmap: uid range [1000-1001) -> [1000-1001) not allowed`.
-- **Arch base ships no fonts.** `setup.sh` installs `noto-fonts` and
-  `ttf-dejavu`; without them GUI apps render as tofu.
+- **Arch base ships no fonts.** `dev-gui/gui.sh` installs `noto-fonts`
+  and `ttf-dejavu`; without them GUI apps render as tofu.
 - **KasmVNC RPM repack is glibc-sensitive.** Works today because Fedora 41
   and Arch both ship recent glibc. If upstream targets a newer-than-Arch
   glibc, switch to the AUR `kasmvncserver` source build.
 - **Pacman post-install hooks log permission-denied** writing
   `/sys/.../uevent` inside unprivileged containers. Cosmetic; transactions
-  complete. The `pac_install()` wrapper in `setup.sh` swallows this and
-  verifies with `pacman -Q`; it also retries up to 3 times to ride out
-  flaky CachyOS mirror 404s.
+  complete. The `pac_install()` wrapper in every setup script swallows
+  this and verifies with `pacman -Q`.
 - **Brave produces dbus error noise** at startup (no session/system bus).
   Navigation works; quieting requires `dbus` + user session bus or
   `dbus-run-session`.

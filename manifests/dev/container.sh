@@ -1,8 +1,10 @@
 # shellcheck shell=bash
-# dev: GUI development container (KasmVNC + LXQt + Brave, NVIDIA passthrough).
-# Sourced by bin/new on the host.
+# dev: headless development container (base toolchain + 'user' uid 1000,
+# NVIDIA passthrough). Sourced by bin/new on the host.
+#
+# For a GUI desktop on top of this, see manifests/dev-gui/.
 
-DESCRIPTION="GUI development container (KasmVNC + LXQt + Brave, NVIDIA passthrough)"
+DESCRIPTION="Headless dev container (base toolchain, zsh, NVIDIA passthrough)"
 IMAGE="images:archlinux"
 PROFILES=(gpu-nvidia bind-mountable)
 
@@ -18,13 +20,11 @@ CONFIG=(
 # add them post-launch with `incus config device add`.
 DEVICES=()
 
-SETUP_SCRIPT="setup.sh"
+SETUP_SCRIPTS=(base.sh user.sh)
 
 hook_post_launch() {
-  local port=8443
   log "Container '${NAME}' ready."
-  log "  IP:    ${IP}"
-  log "  Web:   https://${IP}:${port}/vnc.html?enable_ime=true"
-  log "  VNC:   vncviewer ${IP}:${port}"
-  log "  Shell: incus exec ${NAME} -- sudo -iu user"
+  log "  IP:     ${IP}"
+  log "  DNS:    ${NAME}.incus"
+  log "  Shell:  incus exec ${NAME} -- sudo -iu user"
 }
