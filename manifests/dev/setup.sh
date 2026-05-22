@@ -88,8 +88,17 @@ USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 # pacman post-install hooks (udevadm trigger / systemd-hwdb) fail to write
 # /sys/.../uevent in unprivileged containers and make pacman exit 1 even
 # though the transaction completed. Install, then verify with `pacman -Q`.
+# Uncommon but CachyOS mirrors occasionally 404 mid-transaction; retry on failure.
 pac_install() {
-  pacman -Syu --needed --noconfirm "$@" || true
+  local attempt
+  for attempt in 1 2 3; do
+    pacman -Syu --needed --noconfirm "$@" || true
+    if pacman -Q "$@" >/dev/null 2>&1; then
+      return 0
+    fi
+    log "pacman install attempt ${attempt} failed; retrying"
+    sleep 3
+  done
   pacman -Q "$@" >/dev/null
 }
 
@@ -101,7 +110,10 @@ if ! pacman -Qi cachyos-keyring >/dev/null 2>&1; then
     cd "${tmpd}"
     curl -L -q https://mirror.cachyos.org/cachyos-repo.tar.xz | tar -xJ
     cd cachyos-repo
-    yes | ./cachyos-repo.sh --install
+    # cachyos-repo.sh installs keyring + mirrorlists, then runs `pacman -Syu`.
+    # The upgrade step occasionally 404s on a v3/v4 mirror; swallow it —
+    # the keyring is what matters, and pac_install below retries the upgrade.
+    yes | ./cachyos-repo.sh --install || true
   )
   rm -rf "${tmpd}"
   pacman -Qi cachyos-keyring >/dev/null
