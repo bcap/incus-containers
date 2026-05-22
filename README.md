@@ -98,11 +98,62 @@ incus delete my-dev --force       # destroy
 
 ## Add a new container type
 
-1. Create `manifests/<name>/container.sh` with at least `DESCRIPTION`,
-   `IMAGE`, `PROFILES`.
+1. Create `manifests/<name>/container.sh` (bash, sourced on the host by
+   `bin/new`). Set at least `DESCRIPTION`, `IMAGE`, `PROFILES`.
 2. Optionally add `manifests/<name>/setup.sh` for in-container
-   provisioning.
+   provisioning (pushed and run as `bash <path>` inside the container).
 3. If you need a new capability, add a profile under `incus/profiles/`
    (and an optional `<name>.host.sh` sidecar for host prep).
 
-See `CLAUDE.md` for the full spec.
+### `container.sh` spec
+
+**Required variables**
+
+| Var | Type | Purpose |
+|---|---|---|
+| `DESCRIPTION` | string | One-line description, shown in `bin/new --list`. |
+| `IMAGE` | string | Incus image ref, e.g. `images:archlinux`. |
+| `PROFILES` | array | Profile names resolved against `incus/profiles/<name>.yaml`. Empty array allowed. |
+
+**Optional variables**
+
+| Var | Default | Purpose |
+|---|---|---|
+| `CONFIG` | `()` | Flat `key=value` array. Splatted as `-c key=val` to `incus launch`. |
+| `DEVICES` | `()` | Flat array. Each entry tails `incus config device add <NAME> <entry>`. Applied after launch. |
+| `EPHEMERAL` | `0` | `1` to launch with `--ephemeral`. |
+| `RESTART_AFTER_PROVISION` | `1` | `0` to skip the post-provision restart. |
+| `SETUP_SCRIPT` | `setup.sh` | Path (relative to `CONTAINER_DIR`) of a script pushed and run inside the container. Empty string skips provisioning. |
+
+**Hooks** (all run on the host, all optional, fail-fast on non-zero exit)
+
+| Hook | When | Extra scope |
+|---|---|---|
+| `hook_pre_launch` | After profile sync + host-prep, before `incus launch` | — |
+| `hook_pre_setup` | After launch + devices + network ready, before pushing `SETUP_SCRIPT` | — |
+| `hook_post_setup` | After `SETUP_SCRIPT` returns, before restart | — |
+| `hook_post_launch` | After restart, with `$IP` resolved | `$IP` |
+
+**Variables and helpers exported to hooks**
+
+| Name | Available in | Source |
+|---|---|---|
+| `NAME` | all hooks | CLI arg — container name |
+| `TYPE` | all hooks | CLI arg — manifest name |
+| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$TYPE/` |
+| `REPO_ROOT` | all hooks | Absolute path to repo root |
+| `IMAGE` | all hooks | from manifest |
+| `PROFILES` | all hooks | from manifest |
+| `IP` | `hook_post_launch` | incusbr0 IP, resolved after restart |
+| `log()` | all hooks | Prints `<ISO-8601 timestamp> => <message>` to stderr |
+
+### Profile host-prep sidecars
+
+A profile may declare host-level prerequisites in
+`incus/profiles/<name>.host.sh`. The launcher runs it (via `bash`)
+whenever a manifest references the profile. Sidecars must be idempotent,
+have `log()` available, and abort the launch on non-zero exit. Example:
+`bind-mountable.yaml` needs `root:1000:1` in `/etc/subuid`/`subgid` —
+added by `bind-mountable.host.sh`.
+
+See `CLAUDE.md` for additional internals and the `dev`-specific notes.
