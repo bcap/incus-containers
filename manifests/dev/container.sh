@@ -1,8 +1,8 @@
 # shellcheck shell=bash
-# llm-agent: GUI container for running LLM coding agents with browser automation.
+# dev: GUI development container (KasmVNC + openbox + Brave, NVIDIA passthrough).
 # Sourced by bin/new on the host.
 
-DESCRIPTION="GUI container for LLM coding agents (KasmVNC + openbox + Brave, NVIDIA passthrough)"
+DESCRIPTION="GUI development container (KasmVNC + openbox + Brave, NVIDIA passthrough)"
 IMAGE="images:archlinux"
 PROFILES=(gpu-nvidia bind-mountable)
 
@@ -26,5 +26,5 @@ hook_post_launch() {
   log "  IP:    ${IP}"
   log "  Web:   https://${IP}:${port}/vnc.html"
   log "  VNC:   vncviewer ${IP}:${port}"
-  log "  Shell: incus exec ${NAME} -- sudo -iu agent"
+  log "  Shell: incus exec ${NAME} -- sudo -iu user"
 }

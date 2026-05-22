@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Provisions an llm-agent container. Run as root inside the container:
+# Provisions a dev container. Run as root inside the container:
 #   bash /root/setup.sh
 #
 # Installs:
@@ -8,10 +8,10 @@
 #   - Brave browser
 #   - nvidia-utils (must match host driver version)
 #   - base toolchain: git, base-devel, sudo
-#   - 'agent' user (uid 1000, passwordless wheel)
+#   - 'user' user (uid 1000, passwordless wheel)
 #
 # Provides two systemd services so the GUI stack survives restarts:
-#   agent-kasmvnc (Xvnc, the combined X+VNC server), agent-wm (openbox)
+#   kasmvnc (Xvnc, the combined X+VNC server), wm (openbox)
 #
 # CachyOS-v4 packages require a host CPU with x86-64-v4 support
 # (Zen 4+ / Sapphire Rapids+).
@@ -27,7 +27,7 @@ if [[ "$(id -u)" -ne 0 ]]; then
 fi
 
 USER_UID=1000
-USER_NAME="agent"
+USER_NAME="user"
 
 if ! getent passwd "${USER_UID}" >/dev/null; then
   useradd -m -u "${USER_UID}" -G wheel "${USER_NAME}"
@@ -99,7 +99,7 @@ if [[ ! -f "${USER_HOME}/.vnc/self.pem" ]]; then
   sudo -u "${USER_NAME}" openssl req -x509 -nodes -newkey rsa:2048 \
     -keyout "${USER_HOME}/.vnc/self.pem" \
     -out "${USER_HOME}/.vnc/self.pem" \
-    -days 3650 -subj "/CN=llm-agent-container" 2>/dev/null
+    -days 3650 -subj "/CN=dev-container" 2>/dev/null
   chmod 0600 "${USER_HOME}/.vnc/self.pem"
   chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.vnc/self.pem"
 fi
@@ -153,9 +153,9 @@ chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox"
 
 install -d -m 0755 /etc/systemd/system /etc/environment.d /etc/profile.d
 
-cat >/etc/systemd/system/agent-kasmvnc.service <<EOF
+cat >/etc/systemd/system/kasmvnc.service <<EOF
 [Unit]
-Description=KasmVNC Xvnc (combined X + VNC + web client) for llm-agent container
+Description=KasmVNC Xvnc (combined X + VNC + web client)
 After=network.target
 
 [Service]
@@ -179,11 +179,11 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/systemd/system/agent-wm.service <<EOF
+cat >/etc/systemd/system/wm.service <<EOF
 [Unit]
-Description=Openbox window manager for llm-agent container
-Requires=agent-kasmvnc.service
-After=agent-kasmvnc.service
+Description=Openbox window manager
+Requires=kasmvnc.service
+After=kasmvnc.service
 
 [Service]
 User=${USER_NAME}
@@ -195,18 +195,18 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-cat >/etc/environment.d/10-agent-display.conf <<EOF
+cat >/etc/environment.d/10-display.conf <<EOF
 DISPLAY=${DISPLAY_NUM}
 EOF
 
-cat >/etc/profile.d/agent-display.sh <<EOF
+cat >/etc/profile.d/display.sh <<EOF
 export DISPLAY=${DISPLAY_NUM}
 EOF
-chmod 0644 /etc/profile.d/agent-display.sh
+chmod 0644 /etc/profile.d/display.sh
 
 systemctl daemon-reload
-systemctl enable agent-kasmvnc.service agent-wm.service
-systemctl restart agent-kasmvnc.service agent-wm.service
+systemctl enable kasmvnc.service wm.service
+systemctl restart kasmvnc.service wm.service
 
 if command -v nvidia-smi >/dev/null 2>&1; then
   echo "--- nvidia-smi ---"

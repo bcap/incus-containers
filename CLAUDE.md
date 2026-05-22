@@ -16,7 +16,7 @@ holds:
   container type, holding a `container.sh` (declarative vars + hooks) and
   optionally a `setup.sh` (in-container provisioning).
 
-`llm-agent` is the first manifest. More container types will be added as
+`dev` is the first manifest. More container types will be added as
 sibling directories under `manifests/`.
 
 ## Concepts
@@ -50,7 +50,7 @@ containers/
 │       ├── bind-mountable.host.sh   # optional host-prep sidecar
 │       └── gpu-nvidia.yaml
 └── manifests/
-    └── llm-agent/
+    └── dev/
         ├── container.sh             # declarative manifest + hooks
         └── setup.sh                 # in-container provisioning
 ```
@@ -145,15 +145,15 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 8. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
 9. Resolve `$IP`; run `hook_post_launch`.
 
-## llm-agent specifics
+## dev specifics
 
 Notes that future-you will need when editing
-`manifests/llm-agent/setup.sh` or the manifest:
+`manifests/dev/setup.sh` or the manifest:
 
 - **Display stack** is two systemd services owned by uid 1000:
-  `agent-kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
+  `kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
   passwordless via `-SecurityTypes None -disableBasicAuth`) and
-  `agent-wm.service` (`openbox-session` with tint2 via openbox autostart).
+  `wm.service` (`openbox-session` with tint2 via openbox autostart).
 - **KasmVNC install path:** no Arch package, no generic tarball. The
   setup script downloads the upstream Fedora 41 RPM and extracts with
   `bsdtar -xpf <rpm> -C /`. Runtime deps come from pacman. Fragile to
@@ -210,7 +210,7 @@ network egress on incusbr0. Harden by swapping `raw.idmap` for
 
 ```sh
 incus delete ca-test --force 2>/dev/null
-./bin/new llm-agent ca-test
+./bin/new dev ca-test
 ```
 
 If `incus profile create` or `incus profile edit` hangs from a script
