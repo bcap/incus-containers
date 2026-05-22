@@ -55,7 +55,7 @@ PKGS=(
 
   # LXQt desktop (openbox is the underlying WM) + fonts
   lxqt-session lxqt-panel lxqt-config lxqt-qtplugin lxqt-themes
-  lxqt-runner lxqt-notificationd openbox pcmanfm-qt qterminal
+  lxqt-runner lxqt-notificationd openbox pcmanfm-qt
   alacritty tmux qt6ct
   noto-fonts ttf-dejavu xorg-fonts-misc
   # Cursor + icon themes. xcursor-themes ships Adwaita (sane default
@@ -153,6 +153,33 @@ USER_HOME="$(getent passwd "${USER_UID}" | cut -d: -f6)"
 log "configuring passwordless sudo for wheel"
 echo "%wheel ALL=(ALL:ALL) NOPASSWD: ALL" >/etc/sudoers.d/wheel-nopass
 chmod 0440 /etc/sudoers.d/wheel-nopass
+
+# Disable xdg-user-dirs-update (creates Desktop/Documents/Downloads/Music/
+# Pictures/Public/Templates/Videos in $HOME on first login). Useless in a
+# headless dev container. Must be in place *before* any session starts.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config"
+cat >"${USER_HOME}/.config/user-dirs.conf" <<'EOF'
+enabled=False
+EOF
+cat >"${USER_HOME}/.config/user-dirs.dirs" <<EOF
+XDG_DESKTOP_DIR="\$HOME"
+XDG_DOCUMENTS_DIR="\$HOME"
+XDG_DOWNLOAD_DIR="\$HOME"
+XDG_MUSIC_DIR="\$HOME"
+XDG_PICTURES_DIR="\$HOME"
+XDG_PUBLICSHARE_DIR="\$HOME"
+XDG_TEMPLATES_DIR="\$HOME"
+XDG_VIDEOS_DIR="\$HOME"
+EOF
+chown "${USER_NAME}:${USER_NAME}" \
+  "${USER_HOME}/.config/user-dirs.conf" \
+  "${USER_HOME}/.config/user-dirs.dirs"
+
+# Belt-and-braces: rmdir the default dirs in case anything created them
+# before this script ran. Only removes empty dirs.
+for d in Desktop Documents Downloads Music Pictures Public Templates Videos Projects; do
+  rmdir "${USER_HOME}/${d}" 2>/dev/null || true
+done
 
 # =============================================================================
 # Default user shell: zsh + oh-my-zsh + custom prompt
@@ -419,9 +446,8 @@ type=mainmenu
 type=quicklaunch
 apps\1\desktop=/usr/share/applications/brave-browser.desktop
 apps\2\desktop=/usr/share/applications/Alacritty.desktop
-apps\3\desktop=/usr/share/applications/qterminal.desktop
-apps\4\desktop=/usr/share/applications/pcmanfm-qt.desktop
-apps\size=4
+apps\3\desktop=/usr/share/applications/pcmanfm-qt.desktop
+apps\size=3
 
 [taskbar]
 type=taskbar
@@ -452,6 +478,29 @@ EOF
 
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/lxqt" "${USER_HOME}/.icons"
 
+# Openbox root menu (right-click on desktop). Default at
+# /etc/xdg/openbox/menu.xml lists apps that aren't installed in this
+# container (gnome-terminal, firefox, gedit, etc.). Seed a minimal menu
+# with only what we provide.
+install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/openbox"
+cat >"${USER_HOME}/.config/openbox/menu.xml" <<'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<openbox_menu xmlns="http://openbox.org/3.4/menu">
+  <menu id="root-menu" label="Openbox 3">
+    <item label="Terminal">
+      <action name="Execute"><command>alacritty</command></action>
+    </item>
+    <item label="Browser">
+      <action name="Execute"><command>brave</command></action>
+    </item>
+    <item label="File Manager">
+      <action name="Execute"><command>pcmanfm-qt</command></action>
+    </item>
+  </menu>
+</openbox_menu>
+EOF
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/openbox/menu.xml"
+
 # qt6ct: Qt6 platform theme — gives Qt apps a coherent dark palette
 # (lxqt-qtplugin alone leaves many widgets light). Seed a Breeze-Dark-ish
 # palette + Fusion style. Activated via QT_QPA_PLATFORMTHEME=qt6ct.
@@ -480,19 +529,6 @@ cursor_flash_time=1000
 EOF
 
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/qt6ct"
-
-# qterminal: smaller font + dark color scheme.
-install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/qterminal.org"
-cat >"${USER_HOME}/.config/qterminal.org/qterminal.ini" <<'EOF'
-[General]
-fontFamily=Monospace
-fontSize=10
-guiStyle=Fusion
-colorScheme=Linux
-ApplicationTransparency=0
-TerminalTransparency=0
-EOF
-chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/qterminal.org"
 
 # alacritty: GPU-accelerated terminal. Dark theme + sensible font size.
 install -d -m 0755 -o "${USER_NAME}" -g "${USER_NAME}" "${USER_HOME}/.config/alacritty"
