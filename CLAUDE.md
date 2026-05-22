@@ -149,6 +149,24 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 
 - `dev`: see [manifests/dev/CLAUDE.md](manifests/dev/CLAUDE.md).
 
+## Networking
+
+- `incusbr0` uses `10.10.0.1/24` (gateway). Convention for future
+  bridges: keep `10.10.X.1/24`, varying the third octet per network.
+- Containers are reachable from the host as `<name>.incus` via incus's
+  built-in dnsmasq. The host resolver is wired with a systemd-resolved
+  drop-in at `/etc/systemd/resolved.conf.d/incus.conf`:
+
+  ```
+  [Resolve]
+  DNS=10.10.0.1
+  Domains=~incus
+  ```
+
+  Only `*.incus` queries are routed to `10.10.0.1`; everything else
+  goes through the normal upstream. DHCP-assigned IPs are MAC-hashed
+  and stable per container, but prefer `<name>.incus` over raw IPs.
+
 ## Known gotchas
 
 - **subuid/subgid host prep is automated** via

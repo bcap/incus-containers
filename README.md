@@ -87,6 +87,24 @@ Files appear owned by your user on both sides.
 curl http://10.x.y.z:3000/
 ```
 
+## Networking
+
+`incusbr0` is `10.10.0.1/24`. Containers are reachable from the host as
+`<name>.incus` (e.g. `ssh user@dev.incus`, `https://dev.incus:8443`),
+served by incus's built-in dnsmasq. Wire the host resolver once:
+
+```sh
+sudo tee /etc/systemd/resolved.conf.d/incus.conf >/dev/null <<'EOF'
+[Resolve]
+DNS=10.10.0.1
+Domains=~incus
+EOF
+sudo systemctl restart systemd-resolved
+```
+
+Only `*.incus` queries are routed to `10.10.0.1`; everything else uses
+the normal upstream.
+
 ## Manage containers
 
 ```sh
