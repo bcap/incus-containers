@@ -194,8 +194,9 @@ network egress on incusbr0. Harden by swapping `raw.idmap` for
   glibc, switch to the AUR `kasmvncserver` source build.
 - **Pacman post-install hooks log permission-denied** writing
   `/sys/.../uevent` inside unprivileged containers. Cosmetic; transactions
-  complete. The `pac()` wrapper in `setup.sh` swallows this and explicit
-  `pacman -Q` checks verify installs.
+  complete. The `pac_install()` wrapper in `setup.sh` swallows this and
+  verifies with `pacman -Q`; it also retries up to 3 times to ride out
+  flaky CachyOS mirror 404s.
 - **Brave produces dbus error noise** at startup (no session/system bus).
   Navigation works; quieting requires `dbus` + user session bus or
   `dbus-run-session`.
