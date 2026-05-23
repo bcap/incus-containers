@@ -529,6 +529,7 @@ User=${USER_NAME}
 Environment=HOME=${USER_HOME}
 WorkingDirectory=${USER_HOME}
 ExecStart=/usr/bin/Xvnc ${DISPLAY_NUM} \\
+  -desktop %H \\
   -geometry ${SCREEN_W}x${SCREEN_H} \\
   -depth ${SCREEN_D} \\
   -websocketPort ${WEB_PORT} \\
