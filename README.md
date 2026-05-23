@@ -187,8 +187,8 @@ incus delete my-dev --force       # destroy
 | Name | Available in | Source |
 |---|---|---|
 | `NAME` | all hooks | CLI arg — container name |
-| `TYPE` | all hooks | CLI arg — manifest name |
-| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$TYPE/` |
+| `MANIFEST` | all hooks | CLI arg — manifest name |
+| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$MANIFEST/` |
 | `REPO_ROOT` | all hooks | Absolute path to repo root |
 | `IMAGE` | all hooks | from manifest |
 | `PROFILES` | all hooks | from manifest |

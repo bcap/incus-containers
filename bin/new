@@ -63,12 +63,12 @@ if [[ ${#POSITIONAL[@]} -ne 2 ]]; then
   exit 1
 fi
 
-TYPE="${POSITIONAL[0]}"
+MANIFEST="${POSITIONAL[0]}"
 NAME="${POSITIONAL[1]}"
-CONTAINER_DIR="${MANIFESTS_DIR}/${TYPE}"
-MANIFEST="${CONTAINER_DIR}/container.sh"
+CONTAINER_DIR="${MANIFESTS_DIR}/${MANIFEST}"
+MANIFEST_FILE="${CONTAINER_DIR}/container.sh"
 
-[[ -f "${MANIFEST}" ]] || { echo "Manifest not found: ${MANIFEST}" >&2; exit 1; }
+[[ -f "${MANIFEST_FILE}" ]] || { echo "Manifest not found: ${MANIFEST_FILE}" >&2; exit 1; }
 
 if incus info "${NAME}" >/dev/null 2>&1; then
   echo "Container '${NAME}' already exists. Delete it first: incus delete ${NAME} --force" >&2
@@ -84,13 +84,13 @@ CONFIG=()
 DEVICES=()
 
 # shellcheck disable=SC1090
-source "${MANIFEST}"
+source "${MANIFEST_FILE}"
 
 # Validate required vars.
-: "${DESCRIPTION:?DESCRIPTION must be set in ${MANIFEST}}"
-: "${IMAGE:?IMAGE must be set in ${MANIFEST}}"
-declare -p PROFILES >/dev/null 2>&1 || { echo "PROFILES must be defined in ${MANIFEST}" >&2; exit 1; }
-declare -p SETUP_SCRIPTS >/dev/null 2>&1 || { echo "SETUP_SCRIPTS must be an array in ${MANIFEST}" >&2; exit 1; }
+: "${DESCRIPTION:?DESCRIPTION must be set in ${MANIFEST_FILE}}"
+: "${IMAGE:?IMAGE must be set in ${MANIFEST_FILE}}"
+declare -p PROFILES >/dev/null 2>&1 || { echo "PROFILES must be defined in ${MANIFEST_FILE}" >&2; exit 1; }
+declare -p SETUP_SCRIPTS >/dev/null 2>&1 || { echo "SETUP_SCRIPTS must be an array in ${MANIFEST_FILE}" >&2; exit 1; }
 
 # Apply CLI overrides.
 [[ -n "${EPHEMERAL_OVERRIDE}" ]] && EPHEMERAL="${EPHEMERAL_OVERRIDE}"
@@ -120,7 +120,7 @@ for s in "${SETUP_SCRIPTS[@]}"; do
   SETUP_PATHS+=("$sp")
 done
 
-export NAME TYPE CONTAINER_DIR REPO_ROOT IMAGE
+export NAME MANIFEST CONTAINER_DIR REPO_ROOT IMAGE
 
 # Hook runner: aborts the launch on non-zero exit.
 run_hook() {
@@ -189,7 +189,7 @@ done
 log "Writing /etc/incus-vars in container"
 {
   printf '%s=%q\n' NAME           "${NAME}"
-  printf '%s=%q\n' TYPE           "${TYPE}"
+  printf '%s=%q\n' MANIFEST           "${MANIFEST}"
   printf '%s=%q\n' DESCRIPTION    "${DESCRIPTION}"
   printf '%s=%q\n' IMAGE          "${IMAGE}"
   printf '%s=%q\n' PROFILES       "${PROFILES[*]}"

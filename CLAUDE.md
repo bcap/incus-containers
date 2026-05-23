@@ -107,8 +107,8 @@ Hooks **fail-fast**: a non-zero exit aborts the launch.
 | Name | Available in | Source |
 |---|---|---|
 | `NAME` | all hooks | CLI arg — container name |
-| `TYPE` | all hooks | CLI arg — manifest name (dir under `manifests/`) |
-| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$TYPE/` |
+| `MANIFEST` | all hooks | CLI arg — manifest name (dir under `manifests/`) |
+| `CONTAINER_DIR` | all hooks | Absolute path to `manifests/$MANIFEST/` |
 | `REPO_ROOT` | all hooks | Absolute path to repo root |
 | `IMAGE` | all hooks | from manifest |
 | `PROFILES` | all hooks | from manifest |
@@ -149,7 +149,7 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 ### Flow
 
 1. Parse CLI args.
-2. Source `manifests/$TYPE/container.sh`.
+2. Source `manifests/$MANIFEST/container.sh`.
 3. For each profile in `PROFILES`: sync the YAML into Incus, then run its
    `*.host.sh` sidecar if present.
 4. Run `hook_pre_launch`.
@@ -177,7 +177,7 @@ strings with spaces or special chars round-trip safely.
 | Key | Source |
 |---|---|
 | `NAME` | container name (CLI arg) |
-| `TYPE` | manifest dir name (CLI arg) |
+| `MANIFEST` | manifest dir name (CLI arg) |
 | `DESCRIPTION` | manifest `DESCRIPTION` |
 | `IMAGE` | manifest `IMAGE` |
 | `PROFILES` | manifest `PROFILES` joined with spaces |
