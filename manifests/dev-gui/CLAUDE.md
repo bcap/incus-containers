@@ -104,6 +104,18 @@ don't hand-roll the openbox+tint2 stack.
      core-cursor I-beam.
   `breeze-icons` is added for icons; depends only on `qt6-base`, not on
   Plasma.
+- **Wallpaper**: pcmanfm-qt's desktop module is masked, so the X root
+  window is what's visible behind apps. `/usr/local/bin/gen-wallpaper` does
+  both: ImageMagick renders a 3840x2160 gradient PNG with the
+  container's `hostname`, eth0 IP, and instance description (top-left),
+  then `feh --bg-tile` paints the root. Wired via
+  `~/.config/autostart/wallpaper.desktop` so it regenerates on every
+  LXQt session start — picks up IP changes or renames automatically.
+  Hardcoded font path (`/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf`)
+  sidesteps fontconfig name-lookup flakiness. Description is read from
+  `/etc/incus-vars` (sourced as shell), which `bin/new` writes for every
+  container at provision time — see the launcher flow in the root
+  `CLAUDE.md`.
 - **pcmanfm-qt desktop is masked**. By default lxqt-session autostarts
   `pcmanfm-qt --desktop --profile=lxqt` (via
   `/etc/xdg/autostart/lxqt-desktop.desktop`), which renders broken

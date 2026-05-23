@@ -55,6 +55,9 @@ PKGS=(
 
   # dbus-launch — LXQt needs a session bus
   dbus
+
+  # Wallpaper generator (imagemagick) + setter (feh, sets the X root window).
+  imagemagick feh
 )
 
 KASM_RPM="kasmvncserver_fedora_fortyone_${KASM_VERSION}_x86_64.rpm"
@@ -452,6 +455,62 @@ BgColor=#1f2329
 FgColor=#ffffff
 EOF
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/pcmanfm-qt"
+
+# =============================================================================
+# Wallpaper: PNG (re)generated at each session start with host name, IP and
+# instance description. pcmanfm-qt's desktop module is masked (see above), so
+# the X root window is what's visible — `feh` paints it. Description is read
+# from /etc/incus-description, pushed by hook_pre_setup in container.sh.
+# =============================================================================
+
+log "installing wallpaper script"
+
+cat >/usr/local/bin/gen-wallpaper <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+# NAME, DESCRIPTION, … written by bin/new at provision time.
+# shellcheck disable=SC1091
+[[ -f /etc/incus-vars ]] && . /etc/incus-vars
+
+name="${NAME:-$(hostname)}"
+ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
+ip="${ip:-unknown}"
+description="${DESCRIPTION:-}"
+
+font_size=22
+paddingv=5
+starth=50
+startv=50
+
+out="${HOME}/.background.png"
+
+magick -size 3840x2160 gradient:'#222233-#888899' \
+  -font /usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf \
+  -pointsize ${font_size} -fill '#CCCCCC' \
+  -gravity northwest \
+  -annotate +${starth}+$((starth + (font_size + paddingv) * 0 )) "${name}" \
+  -annotate +${starth}+$((starth + (font_size + paddingv) * 1 )) "${ip}" \
+  -annotate +${starth}+$((starth + (font_size + paddingv) * 3 )) "${description}" \
+  "${out}"
+
+feh --no-fehbg --bg-tile "${out}"
+EOF
+
+chmod 0755 /usr/local/bin/gen-wallpaper
+
+# XDG autostart: regenerates + applies on every LXQt session start, so IP
+# changes (or a rename) reflect on next login without manual intervention.
+cat >"${USER_HOME}/.config/autostart/wallpaper.desktop" <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Wallpaper
+Exec=/usr/local/bin/gen-wallpaper
+OnlyShowIn=LXQt;
+X-LXQt-Need-Tray=false
+EOF
+
+chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/autostart/wallpaper.desktop"
 
 # =============================================================================
 # Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session) + DISPLAY in shells

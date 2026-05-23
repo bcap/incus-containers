@@ -158,11 +158,40 @@ have `log()` available, and abort the launch on non-zero exit. Example:
    basename collisions, before launching anything.
 6. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
 7. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
-8. If `SETUP_SCRIPTS` non-empty: run `hook_pre_setup`, then for each
+8. Push `/etc/incus-vars` into the container (see *Container-side vars*
+   below).
+9. If `SETUP_SCRIPTS` non-empty: run `hook_pre_setup`, then for each
    resolved path push to `/root/<basename>` and `bash` it; finally run
    `hook_post_setup`.
-9. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
-10. Resolve `$IP`; run `hook_post_launch`.
+10. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
+11. Resolve `$IP`; run `hook_post_launch`.
+
+## Container-side vars (`/etc/incus-vars`)
+
+The launcher writes `/etc/incus-vars` inside every container before
+running setup scripts, so both setup scripts and runtime tools can pick
+up host-known facts that aren't trivially recoverable from inside.
+Shell-sourceable (`. /etc/incus-vars`); values are `%q`-quoted so
+strings with spaces or special chars round-trip safely.
+
+| Key | Source |
+|---|---|
+| `NAME` | container name (CLI arg) |
+| `TYPE` | manifest dir name (CLI arg) |
+| `DESCRIPTION` | manifest `DESCRIPTION` |
+| `IMAGE` | manifest `IMAGE` |
+| `PROFILES` | manifest `PROFILES` joined with spaces |
+| `PROVISIONED_AT` | `date -Iseconds` at write time |
+| `REPO_REV` | `git rev-parse HEAD` of this repo; empty if not a git checkout |
+
+`IP` is intentionally **not** included — it's queryable inside
+(`ip -4 -o addr show scope global`) and would be wrong if written
+pre-restart (DHCP may reassign on restart). `REPO_REV` reflects the
+checkout state at provision time; it does not update on container
+restart.
+
+Used today by `manifests/dev-gui/gui.sh`'s `/usr/local/bin/gen-wallpaper`
+to render the description on the desktop background.
 
 ## Per-manifest notes
 

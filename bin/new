@@ -181,6 +181,22 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
+# ─── /etc/incus-vars ──────────────────────────────────────────────────────────
+# Host-known facts that aren't trivially recoverable inside the container.
+# Shell-sourceable (`. /etc/incus-vars`); values are %q-quoted so descriptions
+# with spaces/specials round-trip safely. IP intentionally omitted — it's
+# queryable inside (`ip -4 addr`) and would be wrong pre-restart anyway.
+log "Writing /etc/incus-vars in container"
+{
+  printf '%s=%q\n' NAME           "${NAME}"
+  printf '%s=%q\n' TYPE           "${TYPE}"
+  printf '%s=%q\n' DESCRIPTION    "${DESCRIPTION}"
+  printf '%s=%q\n' IMAGE          "${IMAGE}"
+  printf '%s=%q\n' PROFILES       "${PROFILES[*]}"
+  printf '%s=%q\n' PROVISIONED_AT "$(date -Iseconds)"
+  printf '%s=%q\n' REPO_REV       "$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+} | incus file push - "${NAME}/etc/incus-vars" --mode 0644
+
 # ─── Provision ────────────────────────────────────────────────────────────────
 # Paths already resolved + validated above; hooks fire once around the
 # whole sequence (not per-script).
