@@ -144,7 +144,39 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 
 - Positional args are required: `<manifest>` (dir under `manifests/`) and
   `<name>` (container name).
-- Optional behavior is flag-driven (`--ephemeral`, `--no-restart`).
+- Optional behavior is flag-driven.
+
+| Flag | Purpose |
+|---|---|
+| `--ephemeral` | Launch with `--ephemeral` (overrides manifest). |
+| `--no-restart` | Skip the post-provision restart. |
+| `--split=<spec>` | Split paths onto custom storage volumes. `<spec>` = `<path>[:<vol>][,<path>[:<vol>]...]`. Path must be absolute and not `/`. Volume defaults to `<NAME>-<sanitized-path>` (slashes → `-`). Last `--split` wins. Mutually exclusive with `--split-home`. |
+| `--split-home[=<vol>]` | Sugar for `--split=/home[:<vol>]`. |
+| `--reuse[=<paths>]` | Allow reusing pre-existing volumes. No value → reuse all split paths. With value (comma-separated paths) → only listed paths may reuse; any other split whose volume already exists errors. Requires `--split` or `--split-home`. |
+| `--pool=<pool>` | Storage pool for created/probed volumes (default `default`). |
+
+### Split-volume model
+
+Volumes are created (`incus storage volume create <pool> <vol>
+security.shifted=true`) before launch and attached as disk devices
+*after* launch but *before* setup scripts run. Hot-mount, no restart.
+`security.shifted=true` carries the uid 1000 idmap onto the custom
+volume so files inside appear owned by `user` — no `raw.idmap` profile
+needed for the split path itself.
+
+On reuse, the existing volume's contents become visible at the split
+path before setup scripts run. Setup scripts must be **idempotent on
+reused storage**: guard work that writes into the split path with
+content markers, not mere file-existence checks. Example: `dev/user.sh`
+gates the custom `.zshrc` write on `grep '^function _prompt'` rather
+than `[[ ! -f .zshrc ]]`, because oh-my-zsh's installer also creates a
+template `.zshrc`. New setup scripts that touch split paths should
+follow the same pattern.
+
+Volume name default: `<NAME>-<sanitized-path>` (leading `/` stripped,
+inner `/` → `-`). So `--split=/home` → `<NAME>-home`,
+`--split=/var/lib/docker` → `<NAME>-var-lib-docker`. Device names follow
+the same scheme with a `split-` prefix.
 
 ### Flow
 
@@ -152,19 +184,25 @@ have `log()` available, and abort the launch on non-zero exit. Example:
 2. Source `manifests/$MANIFEST/container.sh`.
 3. For each profile in `PROFILES`: sync the YAML into Incus, then run its
    `*.host.sh` sidecar if present.
-4. Run `hook_pre_launch`.
-5. Resolve + validate every `SETUP_SCRIPTS` path (relative → joined with
+4. Build split-volume specs from `--split` / `--split-home`. For each
+   spec: probe `incus storage volume show $POOL $VOL`. Error out on
+   existing volume unless `--reuse` permits; otherwise
+   `incus storage volume create $POOL $VOL security.shifted=true`.
+5. Run `hook_pre_launch`.
+6. Resolve + validate every `SETUP_SCRIPTS` path (relative → joined with
    `CONTAINER_DIR`, then `realpath -m`). Fails fast on missing files or
    basename collisions, before launching anything.
-6. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
-7. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
-8. Push `/etc/incus-vars` into the container (see *Container-side vars*
-   below).
-9. If `SETUP_SCRIPTS` non-empty: run `hook_pre_setup`, then for each
-   resolved path push to `/root/<basename>` and `bash` it; finally run
-   `hook_post_setup`.
-10. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
-11. Resolve `$IP`; run `hook_post_launch`.
+7. `incus launch $IMAGE $NAME -p default {-p $p} {-c $kv} [--ephemeral]`.
+8. For each split spec: `incus config device add $NAME split-<sanitized>
+   disk pool=$POOL source=$VOL path=$PATH` (hot-mount).
+9. For each entry in `DEVICES`: `incus config device add $NAME <entry>`.
+10. Push `/etc/incus-vars` into the container (see *Container-side vars*
+    below).
+11. If `SETUP_SCRIPTS` non-empty: run `hook_pre_setup`, then for each
+    resolved path push to `/root/<basename>` and `bash` it; finally run
+    `hook_post_setup`.
+12. If `RESTART_AFTER_PROVISION=1`: `incus restart $NAME`.
+13. Resolve `$IP`; run `hook_post_launch`.
 
 ## Container-side vars (`/etc/incus-vars`)
 
@@ -181,6 +219,8 @@ strings with spaces or special chars round-trip safely.
 | `DESCRIPTION` | manifest `DESCRIPTION` |
 | `IMAGE` | manifest `IMAGE` |
 | `PROFILES` | manifest `PROFILES` joined with spaces |
+| `POOL` | `--pool` value (default `default`) |
+| `SPLITS` | Space-separated `<path>:<pool>:<volume>` tokens for each split path. Empty when no `--split{,-home}` was given. |
 | `PROVISIONED_AT` | `date -Iseconds` at write time |
 | `REPO_REV` | `git rev-parse HEAD` of this repo; empty if not a git checkout |
 

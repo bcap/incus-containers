@@ -14,6 +14,7 @@ log() { printf '%s => %s\n' "$(date -Iseconds)" "$*" >&2; }
 export -f log
 
 usage() {
+
   cat <<EOF
 Usage: $(basename "$0") <manifest> <name> [flags]
        $(basename "$0") --list
@@ -22,15 +23,29 @@ Usage: $(basename "$0") <manifest> <name> [flags]
 Launch an Incus container from a manifest in manifests/<manifest>/container.sh.
 
 Required positional args:
-  <manifest>            Directory name under manifests/.
-  <name>                Container name to create.
+  <manifest>                  Directory name under manifests/.
+  <name>                      Container name to create.
 
 Flags:
-      --ephemeral       Launch with --ephemeral (overrides manifest).
-      --no-restart      Skip the post-provision restart.
-      --list            List available manifests and exit.
-  -h, --help            Show this help and exit.
+      --ephemeral             Launch with --ephemeral (overrides manifest).
+      --no-restart            Skip the post-provision restart.
+      --split=<spec>          Split additional paths off into custom storage volumes.
+                              <spec> = <path>[:<vol>][,<path>[:<vol>]...].
+                              Path must be absolute and not '/'. Volume defaults
+                              to <name>-<sanitized-path> (slashes → '-'). Last
+                              --split wins. Mutually exclusive with --split-home.
+      --split-home[=<vol>]    Sugar for --split=/home[:<vol>].
+      --reuse[=<paths>]       Allow reusing pre-existing volumes. No value =
+                              reuse all split paths. With value (comma-separated
+                              paths), only listed paths may reuse; any other
+                              split whose volume already exists errors out.
+                              Requires --split or --split-home.
+      --pool=<pool>           Incus storage pool for created/probed volumes
+                              (default: "default").
+      --list                  List available manifests and exit.
+  -h, --help                  Show this help and exit.
 EOF
+
 }
 
 list_manifests() {
@@ -45,6 +60,13 @@ list_manifests() {
 # ─── Arg parsing ──────────────────────────────────────────────────────────────
 EPHEMERAL_OVERRIDE=""
 RESTART_OVERRIDE=""
+SPLIT_ARG=""
+SPLIT_ARG_SET=0
+SPLIT_HOME_ARG=""
+SPLIT_HOME_SET=0
+REUSE_ARG=""
+REUSE_SET=0
+POOL="default"
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -52,11 +74,21 @@ while [[ $# -gt 0 ]]; do
     --list)    list_manifests; exit 0 ;;
     --ephemeral) EPHEMERAL_OVERRIDE=1 ;;
     --no-restart) RESTART_OVERRIDE=0 ;;
+    --split=*) SPLIT_ARG="${1#--split=}"; SPLIT_ARG_SET=1 ;;
+    --split-home) SPLIT_HOME_SET=1; SPLIT_HOME_ARG="" ;;
+    --split-home=*) SPLIT_HOME_SET=1; SPLIT_HOME_ARG="${1#--split-home=}" ;;
+    --reuse) REUSE_SET=1; REUSE_ARG="" ;;
+    --reuse=*) REUSE_SET=1; REUSE_ARG="${1#--reuse=}" ;;
+    --pool=*) POOL="${1#--pool=}" ;;
     -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
     *) POSITIONAL+=("$1") ;;
   esac
   shift
 done
+
+if [[ "${SPLIT_HOME_SET}" == 1 && "${SPLIT_ARG_SET}" == 1 ]]; then
+  echo "--split-home and --split are mutually exclusive" >&2; exit 1
+fi
 
 if [[ ${#POSITIONAL[@]} -ne 2 ]]; then
   usage >&2
@@ -120,6 +152,97 @@ for s in "${SETUP_SCRIPTS[@]}"; do
   SETUP_PATHS+=("$sp")
 done
 
+# ─── Split-volume specs ───────────────────────────────────────────────────────
+# Build SPLIT_SPECS as "path|volume" entries. Default volume name is
+# <NAME>-<sanitized-path> (slashes collapsed to '-'). Validated and probed
+# now; volumes are created (and conflicts errored) before pre_launch hook.
+sanitize_path() {
+  local p="$1"
+  p="${p#/}"; p="${p%/}"
+  p="${p//\//-}"
+  printf '%s' "$p"
+}
+
+SPLIT_SPECS=()
+declare -A _seen_split_paths=()
+
+add_split_entry() {
+  local path="$1" vol="$2"
+  if [[ "${path}" != /* ]]; then
+    echo "--split path must be absolute: '${path}'" >&2; exit 1
+  fi
+  path="${path%/}"
+  if [[ -z "${path}" ]]; then
+    echo "cannot split '/' (rootfs is implicit)" >&2; exit 1
+  fi
+  if [[ -n "${_seen_split_paths[${path}]:-}" ]]; then
+    echo "duplicate --split path: '${path}'" >&2; exit 1
+  fi
+  _seen_split_paths[${path}]=1
+  [[ -z "${vol}" ]] && vol="${NAME}-$(sanitize_path "${path}")"
+  SPLIT_SPECS+=("${path}|${vol}")
+}
+
+if [[ "${SPLIT_HOME_SET}" == 1 ]]; then
+  add_split_entry "/home" "${SPLIT_HOME_ARG}"
+elif [[ "${SPLIT_ARG_SET}" == 1 ]]; then
+  IFS=',' read -ra _split_entries <<< "${SPLIT_ARG}"
+  for _e in "${_split_entries[@]}"; do
+    [[ -z "${_e}" ]] && continue
+    if [[ "${_e}" == *:* ]]; then
+      add_split_entry "${_e%%:*}" "${_e#*:}"
+    else
+      add_split_entry "${_e}" ""
+    fi
+  done
+fi
+
+# Reuse policy: --reuse (no value) = reuse all; --reuse=p1,p2 = only those.
+declare -A REUSE_PATHS=()
+REUSE_ALL=0
+if [[ "${REUSE_SET}" == 1 ]]; then
+  if [[ ${#SPLIT_SPECS[@]} -eq 0 ]]; then
+    echo "--reuse requires --split or --split-home" >&2; exit 1
+  fi
+  if [[ -z "${REUSE_ARG}" ]]; then
+    REUSE_ALL=1
+  else
+    IFS=',' read -ra _rps <<< "${REUSE_ARG}"
+    for _rp in "${_rps[@]}"; do
+      [[ -z "${_rp}" ]] && continue
+      _rp="${_rp%/}"
+      if [[ -z "${_seen_split_paths[${_rp}]:-}" ]]; then
+        echo "--reuse path '${_rp}' is not in --split paths" >&2; exit 1
+      fi
+      REUSE_PATHS[${_rp}]=1
+    done
+  fi
+fi
+
+# Probe + create volumes. Volumes are attached to the container after launch
+# but before setup scripts run (hot-mount via `incus config device add`), so
+# /home is the volume by the time useradd runs.
+for _spec in "${SPLIT_SPECS[@]}"; do
+  _path="${_spec%%|*}"
+  _vol="${_spec##*|}"
+  _exists=0
+  incus storage volume show "${POOL}" "${_vol}" >/dev/null 2>&1 && _exists=1
+  _reuse_ok=0
+  if [[ "${REUSE_ALL}" == 1 ]] || [[ -n "${REUSE_PATHS[${_path}]:-}" ]]; then
+    _reuse_ok=1
+  fi
+  if [[ "${_exists}" == 1 && "${_reuse_ok}" != 1 ]]; then
+    echo "volume '${POOL}/${_vol}' already exists. Pass --reuse or --reuse=${_path} to reuse it." >&2
+    exit 1
+  fi
+  if [[ "${_exists}" == 1 ]]; then
+    log "Reusing volume '${POOL}/${_vol}' at ${_path}"
+  else
+    log "Creating volume '${POOL}/${_vol}' for ${_path}"
+    incus storage volume create "${POOL}" "${_vol}" security.shifted=true
+  fi
+done
+
 export NAME MANIFEST CONTAINER_DIR REPO_ROOT IMAGE
 
 # Hook runner: aborts the launch on non-zero exit.
@@ -167,6 +290,19 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
+# ─── Split volumes ────────────────────────────────────────────────────────────
+# Attach split-volume disks before setup scripts run. For /home this means
+# useradd -m sees the volume (empty on fresh / pre-populated on reuse), not
+# the image's /home. Hot-mounted via `incus config device add` — no restart.
+for _spec in "${SPLIT_SPECS[@]}"; do
+  _path="${_spec%%|*}"
+  _vol="${_spec##*|}"
+  _devname="split-$(sanitize_path "${_path}")"
+  log "Attaching volume '${POOL}/${_vol}' at ${_path}"
+  incus config device add "${NAME}" "${_devname}" disk \
+    "pool=${POOL}" "source=${_vol}" "path=${_path}"
+done
+
 # ─── Devices ──────────────────────────────────────────────────────────────────
 for d in "${DEVICES[@]}"; do
   log "Adding device: ${d}"
@@ -186,13 +322,23 @@ done
 # Shell-sourceable (`. /etc/incus-vars`); values are %q-quoted so descriptions
 # with spaces/specials round-trip safely. IP intentionally omitted — it's
 # queryable inside (`ip -4 addr`) and would be wrong pre-restart anyway.
+# Build SPLITS as space-separated "<path>:<pool>:<vol>" tokens for the
+# container side. Empty when no --split{,-home} was given.
+_splits_str=""
+for _spec in "${SPLIT_SPECS[@]}"; do
+  _splits_str+="${_spec%%|*}:${POOL}:${_spec##*|} "
+done
+_splits_str="${_splits_str% }"
+
 log "Writing /etc/incus-vars in container"
 {
   printf '%s=%q\n' NAME           "${NAME}"
-  printf '%s=%q\n' MANIFEST           "${MANIFEST}"
+  printf '%s=%q\n' MANIFEST       "${MANIFEST}"
   printf '%s=%q\n' DESCRIPTION    "${DESCRIPTION}"
   printf '%s=%q\n' IMAGE          "${IMAGE}"
   printf '%s=%q\n' PROFILES       "${PROFILES[*]}"
+  printf '%s=%q\n' POOL           "${POOL}"
+  printf '%s=%q\n' SPLITS         "${_splits_str}"
   printf '%s=%q\n' PROVISIONED_AT "$(date -Iseconds)"
   printf '%s=%q\n' REPO_REV       "$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
 } | incus file push - "${NAME}/etc/incus-vars" --mode 0644

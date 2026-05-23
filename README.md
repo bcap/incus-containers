@@ -39,6 +39,34 @@ Examples:
 ./bin/new --help
 ```
 
+### Persistent /home across rebuilds
+
+By default a container's `/` and `/home` live on the same root volume —
+`incus delete` wipes everything. To survive rebuilds, split `/home` onto
+its own storage volume:
+
+```sh
+./bin/new dev my-dev --split-home                  # creates volume my-dev-home
+./bin/new dev my-dev --split-home=shared           # use named volume "shared"
+./bin/new dev my-dev --split=/home,/var/lib/docker # multiple split points
+```
+
+After deleting the container the volume persists; rebuild with `--reuse`
+to mount it again:
+
+```sh
+incus delete my-dev --force
+./bin/new dev my-dev --split-home --reuse          # /home/user, dotfiles, etc. survive
+```
+
+`--reuse` with no value reuses *any* split volume that already exists;
+pass paths (`--reuse=/home`) to allow only specific ones. Any other
+split whose volume already exists causes an error — guards against
+silently shadowing data.
+
+`--pool=<pool>` picks the storage pool for created/probed volumes
+(default: `default`).
+
 The launcher handles host prep (e.g. subuid/subgid for bind mounts),
 syncs Incus profiles from `incus/profiles/`, launches the container, and
 runs each script in the manifest's `SETUP_SCRIPTS` array inside it (each

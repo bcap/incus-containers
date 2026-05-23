@@ -41,9 +41,14 @@ if [[ ! -d "${USER_HOME}/.oh-my-zsh" ]]; then
     'sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended --keep-zshrc'
 fi
 
-log "writing ${USER_NAME} .zshrc"
+# Skip if our custom .zshrc is already in place — preserves user edits when
+# /home is on a reused storage volume (--reuse with --split-home). Detect by
+# content marker, not file existence: oh-my-zsh's installer writes its own
+# template .zshrc above, which we always want to replace on first install.
+if ! grep -q '^function _prompt' "${USER_HOME}/.zshrc" 2>/dev/null; then
+  log "writing ${USER_NAME} .zshrc"
 
-cat >"${USER_HOME}/.zshrc" <<'EOF'
+  cat >"${USER_HOME}/.zshrc" <<'EOF'
 export ZSH="$HOME/.oh-my-zsh"
 source $ZSH/oh-my-zsh.sh
 
@@ -102,8 +107,9 @@ setopt PROMPT_SUBST
 PROMPT='$(_prompt)'
 EOF
 
-chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.zshrc"
-chmod 0644 "${USER_HOME}/.zshrc"
+  chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.zshrc"
+  chmod 0644 "${USER_HOME}/.zshrc"
+fi
 
 if [[ "$(getent passwd "${USER_NAME}" | cut -d: -f7)" != "/usr/bin/zsh" ]]; then
   log "setting default shell for ${USER_NAME} to zsh"
