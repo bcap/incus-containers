@@ -168,6 +168,30 @@ incus start my-dev                # start again
 incus delete my-dev --force       # destroy
 ```
 
+## Clone a container
+
+`bin/clone` is a generic clone for any Incus container — not specific to
+this repo's manifests. `incus copy` alone leaves the clone's custom-volume
+disk devices pointing at the **source's** volumes (they get shared, not
+duplicated); `bin/clone` copies each referenced volume to a new name and
+rewrites the clone's devices to point at the copies, so source and clone
+share no storage.
+
+```sh
+./bin/clone my-dev my-dev-copy                    # clone, leave stopped
+./bin/clone my-dev my-dev-copy --stop --start     # consistent copy, start clone
+./bin/clone my-dev my-dev-copy --no-snapshots     # skip snapshots
+./bin/clone my-dev my-dev-copy --vol=my-dev-home=mydev-home-bak
+./bin/clone my-dev my-dev-copy --pool=fast        # send new volumes to a pool
+```
+
+New volume names default to `${srcvol/$SRC/$DST}` (or `${DST}-${srcvol}` if
+the source vol name doesn't contain the source container name). Profile-
+inherited devices are left as-is — their volumes are shared by design.
+Only **instance-local** disk devices with both `pool` and `source` set are
+considered custom volumes; bind mounts (host-path `source`, no `pool`) and
+the root disk are not duplicated.
+
 ## Add a new container type
 
 1. Create `manifests/<name>/container.sh` (bash, sourced on the host by

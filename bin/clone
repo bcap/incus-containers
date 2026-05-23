@@ -1,0 +1,220 @@
+#!/usr/bin/env bash
+# Generic clone for any Incus container: copies the instance and every
+# instance-local custom-volume disk device, then rewrites the clone's
+# devices to point at the copies so source and clone share no storage.
+#
+# Profile-inherited devices are left as-is (their volumes are shared
+# across instances by design — that's what profiles are for).
+
+set -euo pipefail
+
+log() { printf '%s => %s\n' "$(date -Iseconds)" "$*" >&2; }
+
+usage() {
+  cat <<EOF
+Usage: $(basename "$0") <src> <dst> [flags]
+
+Clone an Incus container including all of its instance-local custom-volume
+disk devices. Each referenced storage volume is copied to a new name and
+the clone's disk devices are rewritten (via 'incus config device set
+... source=<newvol>', preserving other device properties) to point at the
+copies. Profile-inherited devices are left untouched.
+
+Default new volume name: substitutes <src> with <dst> in the source volume
+name; if the name doesn't contain <src>, the new name becomes
+"<dst>-<srcvol>". Use --vol to override per-volume.
+
+Flags:
+      --stop                Stop <src> before copying (filesystem-consistent
+                            clone). Restarts <src> after if it was running.
+      --start               Start <dst> after cloning (default: leave stopped,
+                            matching 'incus copy').
+      --no-snapshots        Skip snapshots on both instance and volume copies
+                            (passes --instance-only / --volume-only).
+      --vol=<map>           Override new volume names. <map> = <srcvol>=<dstvol>
+                            [,<srcvol>=<dstvol>...]. Volumes not listed use
+                            the default derivation.
+      --pool=<pool>         Force all new volumes onto <pool>. Default: each
+                            new volume stays on its source volume's pool.
+  -h, --help                Show this help and exit.
+EOF
+}
+
+# ─── Arg parsing ──────────────────────────────────────────────────────────────
+STOP=0
+START=0
+NO_SNAPSHOTS=0
+VOL_MAP_ARG=""
+POOL_OVERRIDE=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --stop) STOP=1 ;;
+    --start) START=1 ;;
+    --no-snapshots) NO_SNAPSHOTS=1 ;;
+    --vol=*) VOL_MAP_ARG="${1#--vol=}" ;;
+    --pool=*) POOL_OVERRIDE="${1#--pool=}" ;;
+    -*) echo "Unknown option: $1" >&2; usage >&2; exit 1 ;;
+    *) POSITIONAL+=("$1") ;;
+  esac
+  shift
+done
+
+if [[ ${#POSITIONAL[@]} -ne 2 ]]; then
+  usage >&2
+  exit 1
+fi
+
+SRC="${POSITIONAL[0]}"
+DST="${POSITIONAL[1]}"
+
+if [[ "${SRC}" == "${DST}" ]]; then
+  echo "<src> and <dst> must differ" >&2; exit 1
+fi
+
+incus info "${SRC}" >/dev/null 2>&1 || { echo "Source container '${SRC}' not found" >&2; exit 1; }
+if incus info "${DST}" >/dev/null 2>&1; then
+  echo "Destination container '${DST}' already exists" >&2; exit 1
+fi
+
+# ─── Volume-name override map ─────────────────────────────────────────────────
+declare -A VOL_OVERRIDE=()
+if [[ -n "${VOL_MAP_ARG}" ]]; then
+  IFS=',' read -ra _entries <<<"${VOL_MAP_ARG}"
+  for _e in "${_entries[@]}"; do
+    [[ -z "${_e}" ]] && continue
+    if [[ "${_e}" != *=* ]]; then
+      echo "--vol entry '${_e}' must be <srcvol>=<dstvol>" >&2; exit 1
+    fi
+    VOL_OVERRIDE["${_e%%=*}"]="${_e#*=}"
+  done
+fi
+
+# ─── Enumerate src's instance-local custom-volume disk devices ────────────────
+# `incus config device list` returns only instance-local devices (not
+# profile-inherited ones). We further filter to type=disk with both pool and
+# source set — that's the signature of a custom storage volume mount, as
+# opposed to a bind mount (source is a host path, no pool) or the root disk
+# (pool only, no source).
+mapfile -t SRC_DEVS < <(incus config device list "${SRC}")
+
+CUSTOM_DISKS=()   # "devname|srcpool|srcvol|path"
+for _dev in "${SRC_DEVS[@]}"; do
+  [[ -z "${_dev}" ]] && continue
+  _dtype="$(incus config device get "${SRC}" "${_dev}" type 2>/dev/null || true)"
+  [[ "${_dtype}" == "disk" ]] || continue
+  _dsource="$(incus config device get "${SRC}" "${_dev}" source 2>/dev/null || true)"
+  _dpool="$(incus config device get "${SRC}" "${_dev}" pool 2>/dev/null || true)"
+  _dpath="$(incus config device get "${SRC}" "${_dev}" path 2>/dev/null || true)"
+  [[ -n "${_dsource}" && -n "${_dpool}" ]] || continue
+  CUSTOM_DISKS+=("${_dev}|${_dpool}|${_dsource}|${_dpath}")
+done
+
+derive_dst_vol() {
+  local src_vol="$1"
+  if [[ -n "${VOL_OVERRIDE[${src_vol}]:-}" ]]; then
+    printf '%s' "${VOL_OVERRIDE[${src_vol}]}"; return
+  fi
+  if [[ "${src_vol}" == *"${SRC}"* ]]; then
+    printf '%s' "${src_vol//${SRC}/${DST}}"
+  else
+    printf '%s' "${DST}-${src_vol}"
+  fi
+}
+
+# Dedupe: one source volume may be mounted at multiple paths. We copy it
+# once and point every dst device at the same new volume.
+declare -A VOL_PLAN=()    # "srcpool|srcvol" -> "dstpool|dstvol"
+VOL_PLAN_ORDER=()
+for _entry in "${CUSTOM_DISKS[@]}"; do
+  IFS='|' read -r _dev _dpool _dsource _dpath <<<"${_entry}"
+  _key="${_dpool}|${_dsource}"
+  if [[ -z "${VOL_PLAN[${_key}]:-}" ]]; then
+    _dst_vol="$(derive_dst_vol "${_dsource}")"
+    _dst_pool="${POOL_OVERRIDE:-${_dpool}}"
+    VOL_PLAN["${_key}"]="${_dst_pool}|${_dst_vol}"
+    VOL_PLAN_ORDER+=("${_key}")
+  fi
+done
+
+# Validate --vol overrides reference actual source volumes.
+for _src_vol in "${!VOL_OVERRIDE[@]}"; do
+  _found=0
+  for _key in "${VOL_PLAN_ORDER[@]}"; do
+    if [[ "${_key#*|}" == "${_src_vol}" ]]; then _found=1; break; fi
+  done
+  if [[ "${_found}" != 1 ]]; then
+    echo "--vol references '${_src_vol}', which is not a custom-volume mount on '${SRC}'" >&2
+    exit 1
+  fi
+done
+
+# Preflight: every destination volume must not already exist.
+for _key in "${VOL_PLAN_ORDER[@]}"; do
+  IFS='|' read -r _dst_pool _dst_vol <<<"${VOL_PLAN[${_key}]}"
+  if incus storage volume show "${_dst_pool}" "${_dst_vol}" >/dev/null 2>&1; then
+    echo "Destination volume '${_dst_pool}/${_dst_vol}' already exists. Use --vol to override its name." >&2
+    exit 1
+  fi
+done
+
+# ─── Source state ─────────────────────────────────────────────────────────────
+SRC_STATE="$(incus list "${SRC}" -c s --format csv 2>/dev/null | head -n1)"
+WAS_RUNNING=0
+[[ "${SRC_STATE}" == "RUNNING" ]] && WAS_RUNNING=1
+
+if [[ "${STOP}" == 1 && "${WAS_RUNNING}" == 1 ]]; then
+  log "Stopping ${SRC}"
+  incus stop "${SRC}"
+elif [[ "${WAS_RUNNING}" == 1 ]]; then
+  log "Note: ${SRC} is running. Copy is stateless; pass --stop for filesystem-consistent clone."
+fi
+
+# ─── Copy instance ────────────────────────────────────────────────────────────
+COPY_ARGS=()
+[[ "${NO_SNAPSHOTS}" == 1 ]] && COPY_ARGS+=(--instance-only)
+
+log "Copying instance ${SRC} -> ${DST}"
+incus copy "${SRC}" "${DST}" "${COPY_ARGS[@]}"
+
+# ─── Copy each unique custom volume ───────────────────────────────────────────
+VOL_COPY_ARGS=()
+[[ "${NO_SNAPSHOTS}" == 1 ]] && VOL_COPY_ARGS+=(--volume-only)
+
+for _key in "${VOL_PLAN_ORDER[@]}"; do
+  IFS='|' read -r _src_pool _src_vol <<<"${_key}"
+  IFS='|' read -r _dst_pool _dst_vol <<<"${VOL_PLAN[${_key}]}"
+  log "Copying volume ${_src_pool}/${_src_vol} -> ${_dst_pool}/${_dst_vol}"
+  incus storage volume copy \
+    "${_src_pool}/${_src_vol}" "${_dst_pool}/${_dst_vol}" \
+    "${VOL_COPY_ARGS[@]}"
+done
+
+# ─── Rewrite dst devices to point at the new volumes ──────────────────────────
+# `device set` preserves other device properties (readonly, propagation,
+# shift, recursive, etc.); we only mutate source (and pool if --pool was used).
+for _entry in "${CUSTOM_DISKS[@]}"; do
+  IFS='|' read -r _dev _dpool _dsource _dpath <<<"${_entry}"
+  _key="${_dpool}|${_dsource}"
+  IFS='|' read -r _dst_pool _dst_vol <<<"${VOL_PLAN[${_key}]}"
+  log "Rewriting ${DST} device '${_dev}': ${_dpool}/${_dsource} -> ${_dst_pool}/${_dst_vol}"
+  incus config device set "${DST}" "${_dev}" "source=${_dst_vol}"
+  if [[ "${_dst_pool}" != "${_dpool}" ]]; then
+    incus config device set "${DST}" "${_dev}" "pool=${_dst_pool}"
+  fi
+done
+
+# ─── Restore source state ─────────────────────────────────────────────────────
+if [[ "${STOP}" == 1 && "${WAS_RUNNING}" == 1 ]]; then
+  log "Restarting ${SRC}"
+  incus start "${SRC}"
+fi
+
+# ─── Start dst if requested ───────────────────────────────────────────────────
+if [[ "${START}" == 1 ]]; then
+  log "Starting ${DST}"
+  incus start "${DST}"
+fi
+
+log "Done. Cloned ${SRC} -> ${DST} (${#VOL_PLAN_ORDER[@]} volume copy/copies)."
