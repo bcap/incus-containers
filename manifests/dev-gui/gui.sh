@@ -502,8 +502,32 @@ EOF
 chmod 0755 /usr/local/bin/gen-wallpaper
 
 # =============================================================================
-# Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session, wallpaper) +
-# DISPLAY in shells
+# HTTP :80 redirector → KasmVNC web client. Lets users hit
+# `http://<name>.incus` and land on the right URL with the IME flag set.
+# Hostname is resolved per-request so container renames track automatically.
+# =============================================================================
+
+log "installing vnc-redirect script"
+
+cat >/usr/local/bin/vnc-redirect <<'EOF'
+#!/usr/bin/env bash
+# Read+discard the HTTP request (headers end at the first blank line),
+# then emit a 302 to the KasmVNC web client on this host.
+while IFS= read -r line; do
+  line="${line%$'\r'}"
+  [[ -z "$line" ]] && break
+done
+
+url="https://$(hostname).incus:8443/vnc.html?enable_ime=true"
+
+printf 'HTTP/1.1 302 Found\r\nLocation: %s\r\nContent-Length: 0\r\nConnection: close\r\n\r\n' "$url"
+EOF
+
+chmod 0755 /usr/local/bin/vnc-redirect
+
+# =============================================================================
+# Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session, wallpaper,
+# vnc-redirect = :80 → :8443/vnc.html) + DISPLAY in shells
 # =============================================================================
 
 log "installing systemd services (kasmvnc, wm, wallpaper)"
@@ -588,6 +612,19 @@ RestartSec=1
 WantedBy=multi-user.target
 EOF
 
+cat >/etc/systemd/system/vnc-redirect.service <<'EOF'
+[Unit]
+Description=HTTP :80 → KasmVNC web client redirector
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/socat -T 5 TCP-LISTEN:80,reuseaddr,fork EXEC:/usr/local/bin/vnc-redirect
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat >/etc/environment.d/10-display.conf <<EOF
 DISPLAY=${DISPLAY_NUM}
 EOF
@@ -605,9 +642,9 @@ EOF
 
 chmod 0644 /etc/profile.d/display.sh
 
-log "enabling and starting kasmvnc + wm + wallpaper services"
+log "enabling and starting kasmvnc + wm + wallpaper + vnc-redirect services"
 systemctl daemon-reload
-systemctl enable kasmvnc.service wm.service wallpaper.service
-systemctl restart kasmvnc.service wm.service wallpaper.service
+systemctl enable kasmvnc.service wm.service wallpaper.service vnc-redirect.service
+systemctl restart kasmvnc.service wm.service wallpaper.service vnc-redirect.service
 
 log "gui setup complete"

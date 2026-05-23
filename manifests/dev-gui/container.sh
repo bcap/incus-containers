@@ -32,6 +32,6 @@ hook_post_launch() {
   log "Container '${NAME}' ready."
   log "  IP:     ${IP}"
   log "  DNS:    ${NAME}.incus"
-  log "  WebVNC: https://${NAME}.incus:${port}/vnc.html?enable_ime=true"
+  log "  WebVNC: http://${NAME}.incus  (redirects to https://${NAME}.incus:${port}/vnc.html?enable_ime=true)"
   log "  Shell:  incus exec ${NAME} -- sudo -iu user"
 }

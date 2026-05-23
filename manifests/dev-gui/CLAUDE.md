@@ -20,7 +20,12 @@ don't hand-roll the openbox+tint2 stack.
   `wm.service` running `dbus-launch --exit-with-session
   /usr/bin/startlxqt` (spawns lxqt-session → openbox + lxqt-panel +
   lxqt-notificationd + pcmanfm-qt), and `wallpaper.service` (oneshot,
-  see *Wallpaper* below).
+  see *Wallpaper* below). A fourth root-owned service,
+  `vnc-redirect.service`, runs `socat TCP-LISTEN:80,fork
+  EXEC:/usr/local/bin/vnc-redirect` so `http://<name>.incus` 302s to
+  `https://<name>.incus:8443/vnc.html?enable_ime=true`. The helper reads
+  `$(hostname)` per-request, so renames track without re-provision.
+  Needs `socat` (installed in `../dev/base.sh`).
 - **dbus session bus** is required by lxqt-session (config writers,
   notificationd, panel). `dbus-launch --exit-with-session` provides one
   scoped to the lxqt-session lifetime; no separate user systemd unit.

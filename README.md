@@ -77,10 +77,10 @@ When it finishes you'll see (for `dev-gui`):
 
 ```
 … => Container 'my-desktop' ready.
-…    IP:    10.x.y.z
-…    Web:   https://10.x.y.z:8443/vnc.html
-…    VNC:   vncviewer 10.x.y.z:8443
-…    Shell: incus exec my-desktop -- sudo -iu user
+…    IP:     10.x.y.z
+…    DNS:    my-desktop.incus
+…    WebVNC: http://my-desktop.incus  (redirects to https://my-desktop.incus:8443/vnc.html?enable_ime=true)
+…    Shell:  incus exec my-desktop -- sudo -iu user
 ```
 
 `dev` (headless) prints just the IP + shell hint — no KasmVNC.
@@ -91,13 +91,14 @@ When it finishes you'll see (for `dev-gui`):
 browser (self-signed cert; accept the warning):
 
 ```
-https://10.x.y.z:8443/vnc.html
+http://<name>.incus            # :80 redirects to the URL below
+https://<name>.incus:8443/vnc.html?enable_ime=true
 ```
 
 Or use a native VNC client against the same port:
 
 ```sh
-vncviewer 10.x.y.z:8443
+vncviewer <name>.incus:8443
 ```
 
 **Drop into a shell:**

@@ -20,7 +20,7 @@ PKGS=(
   # Toolchain / shell utilities
   zsh sudo base-devel curl wget openssl git rust go npm uv python-uv
   nano vim parallel pv zstd fzf eza jq miller
-  strace perf tealdeer ncdu tmux rsync
+  strace perf tealdeer ncdu tmux rsync socat
 
   # NVIDIA userspace (must match host driver version)
   nvidia-utils
