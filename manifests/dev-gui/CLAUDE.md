@@ -14,12 +14,13 @@ don't hand-roll the openbox+tint2 stack.
 
 ## GUI specifics
 
-- **Display stack** is two systemd services owned by uid 1000:
+- **Display stack** is three systemd services owned by uid 1000:
   `kasmvnc.service` (KasmVNC's combined X+VNC+web on `:8443`,
-  passwordless via `-SecurityTypes None -disableBasicAuth`) and
+  passwordless via `-SecurityTypes None -disableBasicAuth`),
   `wm.service` running `dbus-launch --exit-with-session
-  /usr/bin/startlxqt`. `startlxqt` spawns `lxqt-session`, which in turn
-  starts openbox + lxqt-panel + lxqt-notificationd + pcmanfm-qt.
+  /usr/bin/startlxqt` (spawns lxqt-session → openbox + lxqt-panel +
+  lxqt-notificationd + pcmanfm-qt), and `wallpaper.service` (oneshot,
+  see *Wallpaper* below).
 - **dbus session bus** is required by lxqt-session (config writers,
   notificationd, panel). `dbus-launch --exit-with-session` provides one
   scoped to the lxqt-session lifetime; no separate user systemd unit.
@@ -105,12 +106,16 @@ don't hand-roll the openbox+tint2 stack.
   `breeze-icons` is added for icons; depends only on `qt6-base`, not on
   Plasma.
 - **Wallpaper**: pcmanfm-qt's desktop module is masked, so the X root
-  window is what's visible behind apps. `/usr/local/bin/gen-wallpaper` does
-  both: ImageMagick renders a 3840x2160 gradient PNG with the
+  window is what's visible behind apps. `/usr/local/bin/gen-wallpaper`
+  does both: ImageMagick renders a 3840x2160 gradient PNG with the
   container's `hostname`, eth0 IP, and instance description (top-left),
-  then `feh --bg-tile` paints the root. Wired via
-  `~/.config/autostart/wallpaper.desktop` so it regenerates on every
-  LXQt session start — picks up IP changes or renames automatically.
+  then `feh --bg-tile` paints the root. Wired as
+  `wallpaper.service` — `Type=oneshot`, `After=kasmvnc.service
+  wm.service`, `Requires=kasmvnc.service`, `Restart=on-failure` +
+  `RestartSec=1`. Xvnc has no readiness signal, so the script just fails
+  fast (`feh` exits non-zero with no DISPLAY) and systemd retries until
+  the X socket accepts connections — no polling loop in the script.
+  Runs on every container boot, picking up IP changes or renames.
   Hardcoded font path (`/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf`)
   sidesteps fontconfig name-lookup flakiness. Description is read from
   `/etc/incus-vars` (sourced as shell), which `bin/new` writes for every

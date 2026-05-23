@@ -10,8 +10,9 @@
 #   - LXQt desktop (lxqt-session on openbox)
 #   - Brave browser, alacritty, qt6ct theming
 #
-# Provides two systemd services so the GUI stack survives restarts:
-#   kasmvnc (Xvnc, the combined X+VNC server), wm (lxqt-session)
+# Provides three systemd services so the GUI stack survives restarts:
+#   kasmvnc (Xvnc, the combined X+VNC server), wm (lxqt-session),
+#   wallpaper (oneshot, renders /home/$USER/.background.png on every boot)
 #
 # Access:
 #   https://<container-ip>:8443/   (web client, self-signed cert, no auth)
@@ -457,10 +458,11 @@ EOF
 chown -R "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/pcmanfm-qt"
 
 # =============================================================================
-# Wallpaper: PNG (re)generated at each session start with host name, IP and
+# Wallpaper: PNG (re)generated on every container boot with host name, IP and
 # instance description. pcmanfm-qt's desktop module is masked (see above), so
-# the X root window is what's visible — `feh` paints it. Description is read
-# from /etc/incus-description, pushed by hook_pre_setup in container.sh.
+# the X root window is what's visible — `feh` paints it. Vars come from
+# /etc/incus-vars, written by bin/new at provision time. Wired below as a
+# systemd oneshot (wallpaper.service) ordered after kasmvnc + wm.
 # =============================================================================
 
 log "installing wallpaper script"
@@ -473,7 +475,7 @@ set -euo pipefail
 # shellcheck disable=SC1091
 [[ -f /etc/incus-vars ]] && . /etc/incus-vars
 
-name="${NAME:-$(hostname)}"
+name="$(hostname)"
 ip="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1)"
 ip="${ip:-unknown}"
 description="${DESCRIPTION:-}"
@@ -499,24 +501,12 @@ EOF
 
 chmod 0755 /usr/local/bin/gen-wallpaper
 
-# XDG autostart: regenerates + applies on every LXQt session start, so IP
-# changes (or a rename) reflect on next login without manual intervention.
-cat >"${USER_HOME}/.config/autostart/wallpaper.desktop" <<'EOF'
-[Desktop Entry]
-Type=Application
-Name=Wallpaper
-Exec=/usr/local/bin/gen-wallpaper
-OnlyShowIn=LXQt;
-X-LXQt-Need-Tray=false
-EOF
-
-chown "${USER_NAME}:${USER_NAME}" "${USER_HOME}/.config/autostart/wallpaper.desktop"
-
 # =============================================================================
-# Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session) + DISPLAY in shells
+# Systemd services (kasmvnc = X+VNC+web, wm = lxqt-session, wallpaper) +
+# DISPLAY in shells
 # =============================================================================
 
-log "installing systemd services (kasmvnc, wm)"
+log "installing systemd services (kasmvnc, wm, wallpaper)"
 install -d -m 0755 /etc/systemd/system /etc/environment.d /etc/profile.d
 
 cat >/etc/systemd/system/kasmvnc.service <<EOF
@@ -573,6 +563,31 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
+# Wallpaper as a oneshot. Ordered after wm.service so lxqt-session has had
+# a chance to come up, but feh only needs the X server (kasmvnc.service).
+# Restart=on-failure with a 1s back-off covers the gap between Xvnc spawning
+# and the X socket accepting connections — no polling needed in the script.
+
+cat >/etc/systemd/system/wallpaper.service <<EOF
+[Unit]
+Description=Container info wallpaper
+After=kasmvnc.service wm.service
+Requires=kasmvnc.service
+
+[Service]
+Type=oneshot
+User=${USER_NAME}
+Environment=DISPLAY=${DISPLAY_NUM}
+Environment=HOME=${USER_HOME}
+ExecStart=/usr/local/bin/gen-wallpaper
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 cat >/etc/environment.d/10-display.conf <<EOF
 DISPLAY=${DISPLAY_NUM}
 EOF
@@ -590,9 +605,9 @@ EOF
 
 chmod 0644 /etc/profile.d/display.sh
 
-log "enabling and starting kasmvnc + wm services"
+log "enabling and starting kasmvnc + wm + wallpaper services"
 systemctl daemon-reload
-systemctl enable kasmvnc.service wm.service
-systemctl restart kasmvnc.service wm.service
+systemctl enable kasmvnc.service wm.service wallpaper.service
+systemctl restart kasmvnc.service wm.service wallpaper.service
 
 log "gui setup complete"
